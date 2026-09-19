@@ -27,6 +27,7 @@ final class CompositorMCPCommandRouter {
         "layer.flip", "layer.transform", "layer.distort", "layer.addMask", "layer.deleteMask", "layer.setMaskLinked",
         "layer.setClippingMask", "layer.featherMask",
         "selection.get", "selection.all", "selection.none", "selection.invert", "selection.fromLayer", "selection.fromMask",
+        "selection.rectangle", "selection.ellipse", "selection.polygon", "selection.magicWand",
         "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "preview.render"
     ]
 
@@ -480,6 +481,40 @@ final class CompositorMCPCommandRouter {
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             let layer = try requireLayer(id, session: session)
             guard layer.mask != nil else { throw CompositorMCPCommandError.notFound("Layer mask not found.") }
+        case "selection.rectangle", "selection.ellipse":
+            _ = try requireSelectionRect(arguments)
+            _ = try requireSelectionMode(arguments)
+            guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            guard session.canEditSelection else {
+                throw CompositorMCPCommandError(code: "selection_unavailable", message: "The selection cannot be changed while another edit is active.")
+            }
+        case "selection.polygon":
+            _ = try requirePolygonPoints(arguments)
+            _ = try requireSelectionMode(arguments)
+            guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            guard session.canEditSelection else {
+                throw CompositorMCPCommandError(code: "selection_unavailable", message: "The selection cannot be changed while another edit is active.")
+            }
+        case "selection.magicWand":
+            let point = CGPoint(x: try arguments.requiredDouble("x"), y: try arguments.requiredDouble("y"))
+            if let tolerance = try arguments.optionalDouble("tolerance"), !(0...255).contains(tolerance) {
+                throw CompositorMCPCommandError.invalid("tolerance must be between 0 and 255.")
+            }
+            _ = try arguments.optionalBool("contiguous")
+            _ = try arguments.optionalBool("sampleAllLayers")
+            if let sampleSize = try arguments.optionalString("sampleSize"), wandSampleSize(sampleSize) == nil {
+                throw CompositorMCPCommandError.invalid("sampleSize must be Point Sample, 3 by 3 Average or 5 by 5 Average.")
+            }
+            _ = try requireSelectionMode(arguments)
+            guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            // The wand tool silently ignores clicks outside the canvas; through MCP that is
+            // reported as invalid input because such a point can never produce a selection.
+            guard point.x >= 0, point.y >= 0, point.x < document.size.width, point.y < document.size.height else {
+                throw CompositorMCPCommandError.invalid("x and y must lie inside the canvas.")
+            }
+            guard session.canEditSelection else {
+                throw CompositorMCPCommandError(code: "selection_unavailable", message: "The selection cannot be changed while another edit is active.")
+            }
         case "selection.expand", "selection.contract":
             let pixels = try arguments.requiredInt("pixels")
             guard (1...10_000).contains(pixels) else { throw CompositorMCPCommandError.invalid("pixels must be between 1 and 10,000.") }
@@ -553,6 +588,64 @@ final class CompositorMCPCommandRouter {
             throw CompositorMCPCommandError.invalid("corners must describe a convex, non-degenerate quadrilateral.")
         }
         return corners
+    }
+
+    /// The options-bar selection combination, exactly as `selectionModeChoice` offers it.
+    private func requireSelectionMode(_ arguments: [String: CompositorMCPJSON]) throws -> SelectionMode {
+        switch try arguments.optionalString("mode") ?? "replace" {
+        case "replace": return .replace
+        case "add": return .add
+        case "subtract": return .subtract
+        default: throw CompositorMCPCommandError.invalid("mode must be replace, add or subtract.")
+        }
+    }
+
+    /// A document-space marquee box. The Marquee quantises drags to whole pixels; the API
+    /// takes the caller's bounds as given so `selection.get` reports them back unchanged.
+    private func requireSelectionRect(_ arguments: [String: CompositorMCPJSON]) throws -> CGRect {
+        let x = try arguments.requiredDouble("x"), y = try arguments.requiredDouble("y")
+        let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
+        guard width >= 1, height >= 1 else {
+            throw CompositorMCPCommandError.invalid("width and height must be at least 1.")
+        }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// The polygonal lasso's document-space vertices, in drawing order.
+    private func requirePolygonPoints(_ arguments: [String: CompositorMCPJSON]) throws -> [CGPoint] {
+        guard let raw = arguments["points"]?.array, (3...10_000).contains(raw.count) else {
+            throw CompositorMCPCommandError.invalid("points must be an array of 3 to 10,000 {x, y} points.")
+        }
+        return try raw.map { value -> CGPoint in
+            guard let point = value.object, let x = point["x"]?.number, x.isFinite, let y = point["y"]?.number, y.isFinite else {
+                throw CompositorMCPCommandError.invalid("points must contain {x, y} points.")
+            }
+            return CGPoint(x: x, y: y)
+        }
+    }
+
+    /// The options-bar sample sizes, matched on their upstream display titles.
+    private func wandSampleSize(_ value: String) -> WandSampleSize? {
+        WandSampleSize.allCases.first { $0.title.caseInsensitiveCompare(value) == .orderedSame }
+    }
+
+    /// Shared marquee/lasso apply: the shape is clipped to the canvas and combined with the
+    /// current selection through `applySelection`, as `finishLasso` does. An outline whose
+    /// clipped area is empty selects nothing — in New mode it deselects — so no explicit
+    /// empty selection is created (its `CGRect.null` bounds would not serialise to JSON).
+    private func applySelectionShape(_ shape: CGPath, mode: SelectionMode, name: String, session: EditorSession) throws -> Outcome {
+        guard let document = session.document, session.canEditSelection else {
+            throw CompositorMCPCommandError(code: "selection_unavailable", message: "The selection cannot be changed while another edit is active.")
+        }
+        let canvas = CGPath(rect: CGRect(origin: .zero, size: document.size), transform: nil)
+        let clipped = shape.intersection(canvas, using: .winding)
+        let bounds = clipped.boundingBoxOfPath
+        guard !clipped.isEmpty, bounds.width > 0, bounds.height > 0 else {
+            if mode == .replace { session.deselect() }
+            return Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: true)
+        }
+        session.applySelection(shape, mode: mode, name: name)
+        return Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: true)
     }
 
     private struct Outcome {
@@ -1061,6 +1154,52 @@ final class CompositorMCPCommandRouter {
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             guard session.document?.layers.first(where: { $0.id == id })?.mask != nil else { throw CompositorMCPCommandError.notFound("Layer mask not found.") }
             session.loadMaskSelection(layerID: id)
+            return Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: true)
+        case "selection.rectangle":
+            let rect = try requireSelectionRect(arguments)
+            let mode = try requireSelectionMode(arguments)
+            return try applySelectionShape(CGPath(rect: rect, transform: nil), mode: mode, name: "Rectangular Marquee", session: session)
+        case "selection.ellipse":
+            let rect = try requireSelectionRect(arguments)
+            let mode = try requireSelectionMode(arguments)
+            return try applySelectionShape(CGPath(ellipseIn: rect, transform: nil), mode: mode, name: "Elliptical Marquee", session: session)
+        case "selection.polygon":
+            let points = try requirePolygonPoints(arguments)
+            let mode = try requireSelectionMode(arguments)
+            let outline = CGMutablePath()
+            outline.addLines(between: points)
+            outline.closeSubpath()
+            return try applySelectionShape(outline, mode: mode, name: "Polygonal Lasso", session: session)
+        case "selection.magicWand":
+            let point = CGPoint(x: try arguments.requiredDouble("x"), y: try arguments.requiredDouble("y"))
+            let mode = try requireSelectionMode(arguments)
+            guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            guard point.x >= 0, point.y >= 0, point.x < document.size.width, point.y < document.size.height else {
+                throw CompositorMCPCommandError.invalid("x and y must lie inside the canvas.")
+            }
+            guard session.canEditSelection else {
+                throw CompositorMCPCommandError(code: "selection_unavailable", message: "The selection cannot be changed while another edit is active.")
+            }
+            // The same session entry point the canvas tool uses; the options-bar settings
+            // are restored afterwards so one call does not reconfigure the user's wand.
+            // When nothing matches, upstream clears the selection in New mode and leaves
+            // it alone otherwise — the outcome is simply the resulting selection state.
+            let previousSettings = session.wandSettings
+            var settings = previousSettings
+            settings.tolerance = Int(min(255, max(0, try arguments.optionalDouble("tolerance") ?? 32)).rounded())
+            settings.contiguous = try arguments.optionalBool("contiguous") ?? true
+            settings.sampleAllLayers = try arguments.optionalBool("sampleAllLayers") ?? false
+            if let sampleSize = try arguments.optionalString("sampleSize"), let size = wandSampleSize(sampleSize) {
+                settings.sampleSize = size
+            }
+            session.wandSettings = settings
+            session.brushError = nil
+            await session.magicWand(at: point, mode: mode)
+            session.wandSettings = previousSettings
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "wand_failed", message: message)
+            }
             return Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: true)
         case "selection.expand":
             guard session.selection != nil, session.canModifySelection else { throw CompositorMCPCommandError(code: "selection_required", message: "No editable selection exists.") }

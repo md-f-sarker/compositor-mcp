@@ -21,6 +21,15 @@ interface MockLayer {
   group: boolean;
   transform: { x: number; y: number; width: number; height: number; rotation: number; flipX: boolean; flipY: boolean; sampling: string };
   mask: boolean;
+  /** Bounds of the last pixels.fill, approximating painted coverage; null when never filled. */
+  fill: MockSelection | null;
+}
+
+interface MockSelection {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 interface MockDocument {
@@ -31,7 +40,8 @@ interface MockDocument {
   layers: MockLayer[];
   activeLayerId: string | null;
   selectedLayerIds: string[];
-  hasSelection: boolean;
+  /** Document-space selection bounds; null means no selection. */
+  selection: MockSelection | null;
 }
 
 export class MockBridgeTransport implements BridgeTransport {
@@ -132,8 +142,9 @@ export class MockBridgeTransport implements BridgeTransport {
       case "app.getState":
       case "workspace.list":
       case "layer.list":
-      case "selection.get":
         return this.state();
+      case "selection.get":
+        return this.selectionValue();
       case "document.create": {
         const width = requiredNumber(args, "width");
         const height = requiredNumber(args, "height");
@@ -145,7 +156,7 @@ export class MockBridgeTransport implements BridgeTransport {
           layers: [],
           activeLayerId: null,
           selectedLayerIds: [],
-          hasSelection: false,
+          selection: null,
         };
         this.revision += 1;
         return { documentId: this.document.id };
@@ -238,6 +249,7 @@ export class MockBridgeTransport implements BridgeTransport {
           group: false,
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
+          fill: null,
         };
         document.layers.push(layer);
         document.activeLayerId = id;
@@ -264,6 +276,7 @@ export class MockBridgeTransport implements BridgeTransport {
           group: true,
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
+          fill: null,
         };
         document.layers.splice(topIndex + 1, 0, group);
         for (const layer of document.layers) {
@@ -337,7 +350,7 @@ export class MockBridgeTransport implements BridgeTransport {
           throw new CompositorMcpError("invalid_arguments", "mode must be reveal, hide or from-selection.");
         }
         if (layer.mask) throw new CompositorMcpError("mask_exists", "The layer already has a mask.");
-        if (mode === "from-selection" && !this.requireDocument().hasSelection) {
+        if (mode === "from-selection" && !this.requireDocument().selection) {
           throw new CompositorMcpError("selection_required", "from-selection requires an active selection.");
         }
         layer.mask = true;
@@ -391,19 +404,155 @@ export class MockBridgeTransport implements BridgeTransport {
         this.revision += 1;
         return { deletedLayerId: id };
       }
-      case "selection.all":
-        this.requireDocument().hasSelection = true;
+      case "selection.all": {
+        const document = this.requireDocument();
+        document.selection = { x: 0, y: 0, width: document.width, height: document.height };
         this.revision += 1;
         return { selected: true };
+      }
       case "selection.none":
-        this.requireDocument().hasSelection = false;
+        this.requireDocument().selection = null;
         this.revision += 1;
         return { selected: false };
+      case "selection.rectangle":
+      case "selection.ellipse": {
+        const x = requiredNumber(args, "x");
+        const y = requiredNumber(args, "y");
+        const width = requiredNumber(args, "width");
+        const height = requiredNumber(args, "height");
+        if (width < 1 || height < 1) {
+          throw new CompositorMcpError("invalid_arguments", "width and height must be at least 1.");
+        }
+        this.combineSelection({ x, y, width, height }, selectionMode(args));
+        this.revision += 1;
+        return this.selectionValue();
+      }
+      case "selection.polygon": {
+        const points = requiredPoints(args, "points");
+        if (points.length < 3) {
+          throw new CompositorMcpError("invalid_arguments", "points must be an array of 3 to 10,000 {x, y} points.");
+        }
+        const xs = points.map((point) => point.x);
+        const ys = points.map((point) => point.y);
+        const left = Math.min(...xs);
+        const top = Math.min(...ys);
+        this.combineSelection(
+          { x: left, y: top, width: Math.max(...xs) - left, height: Math.max(...ys) - top },
+          selectionMode(args),
+        );
+        this.revision += 1;
+        return this.selectionValue();
+      }
+      case "selection.magicWand": {
+        const document = this.requireDocument();
+        const x = requiredNumber(args, "x");
+        const y = requiredNumber(args, "y");
+        if (x < 0 || y < 0 || x >= document.width || y >= document.height) {
+          throw new CompositorMcpError("invalid_arguments", "x and y must lie inside the canvas.");
+        }
+        const tolerance = optionalNumber(args, "tolerance") ?? 32;
+        if (tolerance < 0 || tolerance > 255) {
+          throw new CompositorMcpError("invalid_arguments", "tolerance must be between 0 and 255.");
+        }
+        optionalBoolean(args, "contiguous");
+        optionalBoolean(args, "sampleAllLayers");
+        const sampleSize = optionalString(args, "sampleSize") ?? "Point Sample";
+        if (!WAND_SAMPLE_SIZES.includes(sampleSize)) {
+          throw new CompositorMcpError("invalid_arguments", "sampleSize must be Point Sample, 3 by 3 Average or 5 by 5 Average.");
+        }
+        const mode = selectionMode(args);
+        // Approximation: mock pixel layers are a uniform colour, so a matching seed
+        // floods a tolerance-scaled patch centred on the point (clipped to the canvas).
+        // A document without a pixel layer has nothing to sample, so nothing matches —
+        // upstream then deselects in replace mode and leaves the selection otherwise.
+        if (document.layers.some((layer) => !layer.group)) {
+          const half = Math.max(1, tolerance);
+          this.combineSelection({ x: x - half, y: y - half, width: half * 2, height: half * 2 }, mode);
+        } else if (mode === "replace") {
+          document.selection = null;
+        }
+        this.revision += 1;
+        return this.selectionValue();
+      }
+      case "pixels.fill": {
+        const document = this.requireDocument();
+        const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+        if (!layer || layer.group) {
+          throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be filled.");
+        }
+        const target = optionalString(args, "target") ?? "foreground";
+        if (target !== "foreground" && target !== "background") {
+          throw new CompositorMcpError("invalid_arguments", "target must be foreground or background.");
+        }
+        // Fills the selection, or the whole layer when no selection exists.
+        layer.fill = document.selection ? { ...document.selection } : { x: layer.transform.x, y: layer.transform.y, width: layer.transform.width, height: layer.transform.height };
+        this.revision += 1;
+        return { filled: true, target };
+      }
       case "history.undo":
       case "history.redo":
         return { supportedInMock: false };
       default:
         throw new CompositorMcpError("mock_unsupported", `The mock bridge does not implement ${operation.name}.`);
+    }
+  }
+
+  /// The selection snapshot the real bridge returns for selection operations:
+  /// `{ exists, antialiased, bounds }`, or null when nothing is selected.
+  private selectionValue(): JsonValue {
+    const selection = this.document?.selection;
+    if (!selection) return null;
+    return { exists: true, antialiased: true, bounds: { ...selection } };
+  }
+
+  /// Mirrors upstream `finishLasso` + `applySelection`: the shape is clipped to the
+  /// canvas and combined by mode. An outline whose clipped area is empty selects
+  /// nothing — in replace mode it deselects. Subtract uses a bounding-box
+  /// approximation: a clip covering the current bounds empties the selection.
+  private combineSelection(shape: MockSelection, mode: string): void {
+    const document = this.requireDocument();
+    if (shape.width <= 0 || shape.height <= 0) {
+      if (mode === "replace") document.selection = null;
+      return;
+    }
+    const left = Math.max(0, shape.x);
+    const top = Math.max(0, shape.y);
+    const right = Math.min(document.width, shape.x + shape.width);
+    const bottom = Math.min(document.height, shape.y + shape.height);
+    if (right <= left || bottom <= top) {
+      if (mode === "replace") document.selection = null;
+      return;
+    }
+    const clipped: MockSelection = { x: left, y: top, width: right - left, height: bottom - top };
+    switch (mode) {
+      case "replace":
+        document.selection = clipped;
+        break;
+      case "add": {
+        const current = document.selection;
+        if (!current) {
+          document.selection = clipped;
+          break;
+        }
+        const ux = Math.min(current.x, clipped.x);
+        const uy = Math.min(current.y, clipped.y);
+        document.selection = {
+          x: ux,
+          y: uy,
+          width: Math.max(current.x + current.width, clipped.x + clipped.width) - ux,
+          height: Math.max(current.y + current.height, clipped.y + clipped.height) - uy,
+        };
+        break;
+      }
+      case "subtract": {
+        const current = document.selection;
+        if (!current) return;
+        const covers = clipped.x <= current.x && clipped.y <= current.y
+          && clipped.x + clipped.width >= current.x + current.width
+          && clipped.y + clipped.height >= current.y + current.height;
+        if (covers) document.selection = null;
+        break;
+      }
     }
   }
 
@@ -478,6 +627,23 @@ interface Point {
   y: number;
 }
 
+function requiredPoints(object: JsonObject, key: string): Point[] {
+  const value = object[key];
+  if (!Array.isArray(value)) {
+    throw new CompositorMcpError("invalid_arguments", `${key} must be an array of {x, y} points.`);
+  }
+  return value.map((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
+    }
+    const { x, y } = item as JsonObject;
+    if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
+    }
+    return { x, y };
+  });
+}
+
 function requiredCorners(object: JsonObject, key: string): Point[] {
   const value = object[key];
   if (!Array.isArray(value) || value.length !== 4) {
@@ -512,5 +678,15 @@ function isUsableDistortCorners(corners: Point[]): boolean {
 }
 
 const CANVAS_ANCHORS = ["top-left", "top", "top-right", "left", "centre", "right", "bottom-left", "bottom", "bottom-right"];
+
+const WAND_SAMPLE_SIZES = ["Point Sample", "3 by 3 Average", "5 by 5 Average"];
+
+function selectionMode(object: JsonObject): string {
+  const mode = optionalString(object, "mode") ?? "replace";
+  if (mode !== "replace" && mode !== "add" && mode !== "subtract") {
+    throw new CompositorMcpError("invalid_arguments", "mode must be replace, add or subtract.");
+  }
+  return mode;
+}
 
 const clamp = (value: number, minimum: number, maximum: number): number => Math.min(maximum, Math.max(minimum, value));
