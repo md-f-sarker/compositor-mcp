@@ -743,7 +743,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Rectangular selection",
     description: "Create, add to or subtract a rectangular selection.",
     category: "selection",
-    status: "planned",
     aliases: ["marquee", "rectangular marquee", "select rectangle"],
     tags: ["marquee", "rectangle"],
     inputSchema: object(
@@ -761,7 +760,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Elliptical selection",
     description: "Create, add to or subtract an elliptical selection.",
     category: "selection",
-    status: "planned",
     aliases: ["elliptical marquee", "select ellipse", "circular selection"],
     tags: ["marquee", "ellipse"],
     inputSchema: object(
@@ -779,7 +777,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Polygonal selection",
     description: "Create a polygonal lasso selection from document-space points.",
     category: "selection",
-    status: "planned",
     aliases: ["lasso", "polygonal lasso", "select polygon"],
     tags: ["lasso", "polygon"],
     inputSchema: object(
@@ -810,7 +807,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Magic Wand selection",
     description: "Select similar pixels around a document-space point.",
     category: "selection",
-    status: "planned",
     aliases: ["wand", "select similar", "select by colour"],
     tags: ["wand", "tolerance"],
     inputSchema: object(

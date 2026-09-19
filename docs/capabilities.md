@@ -3,7 +3,7 @@
 _Generated from `packages/protocol/src/capabilities.ts` by `scripts/generate-capability-docs.mjs`._
 _Do not edit by hand — run `npm run docs:capabilities` and commit the result._
 
-62 operations: 48 implemented, 14 planned.
+62 operations: 52 implemented, 10 planned.
 `execute` rejects `planned` operations with `operation_not_implemented` until the bridge implements them.
 
 **Risk** — `read`: no mutation; `write`: mutates the document; `destructive`: requires
@@ -87,10 +87,10 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `selection.invert` | Invert selection | implemented | write | yes | – | – |
 | `selection.fromLayer` | Select layer pixels | implemented | write | yes | `layerId` | – |
 | `selection.fromMask` | Select mask areas | implemented | write | yes | `layerId` | – |
-| `selection.rectangle` | Rectangular selection | planned | write | yes | `x`, `y`, `width`, `height`, `mode`? | aliases: marquee, rectangular marquee, select rectangle; tags: marquee, rectangle |
-| `selection.ellipse` | Elliptical selection | planned | write | yes | `x`, `y`, `width`, `height`, `mode`? | aliases: elliptical marquee, select ellipse, circular selection; tags: marquee, ellipse |
-| `selection.polygon` | Polygonal selection | planned | write | yes | `points`, `mode`? | aliases: lasso, polygonal lasso, select polygon; tags: lasso, polygon |
-| `selection.magicWand` | Magic Wand selection | planned | write | yes | `x`, `y`, `tolerance`?, `contiguous`?, `sampleSize`?, `sampleAllLayers`?, `mode`? | aliases: wand, select similar, select by colour; tags: wand, tolerance |
+| `selection.rectangle` | Rectangular selection | implemented | write | yes | `x`, `y`, `width`, `height`, `mode`? | aliases: marquee, rectangular marquee, select rectangle; tags: marquee, rectangle |
+| `selection.ellipse` | Elliptical selection | implemented | write | yes | `x`, `y`, `width`, `height`, `mode`? | aliases: elliptical marquee, select ellipse, circular selection; tags: marquee, ellipse |
+| `selection.polygon` | Polygonal selection | implemented | write | yes | `points`, `mode`? | aliases: lasso, polygonal lasso, select polygon; tags: lasso, polygon |
+| `selection.magicWand` | Magic Wand selection | implemented | write | yes | `x`, `y`, `tolerance`?, `contiguous`?, `sampleSize`?, `sampleAllLayers`?, `mode`? | aliases: wand, select similar, select by colour; tags: wand, tolerance |
 | `selection.expand` | Expand selection | implemented | write | yes | `pixels` | – |
 | `selection.contract` | Contract selection | implemented | write | yes | `pixels` | – |
 

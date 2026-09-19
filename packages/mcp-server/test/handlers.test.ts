@@ -62,18 +62,37 @@ test("operation arguments are checked against the capability schema", () => {
   );
 });
 
+interface MockBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 interface MockState {
   current: {
     width: number;
     height: number;
     resolution: number;
-    layers: Array<{ id: string; parentId: string | null; group: boolean; mask: boolean; transform: { x: number; y: number; width: number; height: number } }>;
+    layers: Array<{ id: string; parentId: string | null; group: boolean; mask: boolean; fill: MockBounds | null; transform: { x: number; y: number; width: number; height: number } }>;
     selectedLayerIds: string[];
+    selection: MockBounds | null;
   } | null;
 }
 
+interface SelectionSnapshot {
+  exists: boolean;
+  antialiased: boolean;
+  bounds: MockBounds;
+}
+
 const execute = async (bridge: MockBridgeTransport, request: ExecuteRequest) =>
-  (await handleExecute(bridge, request)) as { ok: boolean; rolledBack?: boolean; results: Array<{ ok: boolean; error?: { code: string } }>; state: MockState };
+  (await handleExecute(bridge, request)) as {
+    ok: boolean;
+    rolledBack?: boolean;
+    results: Array<{ ok: boolean; value?: unknown; error?: { code: string } }>;
+    state: MockState;
+  };
 
 const createDocument = async (bridge: MockBridgeTransport, width = 1200, height = 800) => {
   await handleExecute(bridge, { operations: [{ name: "document.create", arguments: { width, height } }] });
@@ -261,4 +280,149 @@ test("dry-run validates the new geometry operations", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.results.every((entry) => entry.ok), true);
   assert.equal(result.state.current?.width, 1200);
+});
+
+test("selection.rectangle replace reports bounds equal to the rect", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const result = await execute(bridge, {
+    operations: [{ name: "selection.rectangle", arguments: { x: 40, y: 40, width: 400, height: 300, mode: "replace" } }],
+  });
+  assert.equal(result.ok, true);
+  const snapshot = result.results[0]?.value as SelectionSnapshot;
+  assert.equal(snapshot.exists, true);
+  assert.deepEqual(snapshot.bounds, { x: 40, y: 40, width: 400, height: 300 });
+  assert.deepEqual(result.state.current?.selection, { x: 40, y: 40, width: 400, height: 300 });
+
+  const got = await execute(bridge, { operations: [{ name: "selection.get" }] });
+  const reported = got.results[0]?.value as SelectionSnapshot;
+  assert.deepEqual(reported.bounds, { x: 40, y: 40, width: 400, height: 300 });
+});
+
+test("selection.ellipse add grows the combined selection bounds", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await execute(bridge, {
+    operations: [{ name: "selection.rectangle", arguments: { x: 40, y: 40, width: 400, height: 300 } }],
+  });
+  const result = await execute(bridge, {
+    operations: [{ name: "selection.ellipse", arguments: { x: 500, y: 100, width: 200, height: 200, mode: "add" } }],
+  });
+  assert.equal(result.ok, true);
+  const snapshot = result.results[0]?.value as SelectionSnapshot;
+  assert.ok(snapshot.bounds.width > 400, "combined coverage must grow beyond the first rect");
+  assert.equal(snapshot.bounds.x, 40);
+  assert.equal(snapshot.bounds.y, 40);
+});
+
+test("selection.polygon selects a five-point outline and rejects two points", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const result = await execute(bridge, {
+    operations: [
+      {
+        name: "selection.polygon",
+        arguments: {
+          points: [
+            { x: 120, y: 80 },
+            { x: 260, y: 60 },
+            { x: 300, y: 220 },
+            { x: 200, y: 280 },
+            { x: 150, y: 260 },
+          ],
+        },
+      },
+    ],
+  });
+  assert.equal(result.ok, true);
+  assert.equal((result.results[0]?.value as SelectionSnapshot).exists, true);
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "selection.polygon", arguments: { points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] } }],
+      }),
+    /at least 3/i,
+  );
+});
+
+test("selection.magicWand selects a flat-colour region and wider tolerance expands it", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await execute(bridge, { operations: [{ name: "layer.addBlank", arguments: {} }] });
+  const narrow = await execute(bridge, {
+    operations: [{ name: "selection.magicWand", arguments: { x: 600, y: 400, tolerance: 8 } }],
+  });
+  assert.equal(narrow.ok, true);
+  const narrowBounds = (narrow.results[0]?.value as SelectionSnapshot).bounds;
+  const wide = await execute(bridge, {
+    operations: [{ name: "selection.magicWand", arguments: { x: 600, y: 400, tolerance: 96 } }],
+  });
+  assert.equal(wide.ok, true);
+  const wideBounds = (wide.results[0]?.value as SelectionSnapshot).bounds;
+  assert.ok(wideBounds.width > narrowBounds.width && wideBounds.height > narrowBounds.height);
+});
+
+test("selection.magicWand with nothing to sample leaves an empty selection", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await execute(bridge, {
+    operations: [{ name: "selection.rectangle", arguments: { x: 10, y: 10, width: 50, height: 50 } }],
+  });
+  const result = await execute(bridge, {
+    operations: [{ name: "selection.magicWand", arguments: { x: 600, y: 400 } }],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0]?.value, null);
+  assert.equal(result.state.current?.selection, null);
+});
+
+test("selection add mode with no existing selection behaves as replace", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const result = await execute(bridge, {
+    operations: [{ name: "selection.rectangle", arguments: { x: 20, y: 20, width: 100, height: 80, mode: "add" } }],
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual((result.results[0]?.value as SelectionSnapshot).bounds, { x: 20, y: 20, width: 100, height: 80 });
+});
+
+test("atomic rectangle select + pixels.fill fills the region and rolls back on failure", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await execute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name: "Fill" } }] });
+  const filled = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "selection.rectangle", arguments: { x: 10, y: 10, width: 100, height: 100 } },
+      { name: "pixels.fill", arguments: { target: "foreground" } },
+    ],
+  });
+  assert.equal(filled.ok, true);
+  assert.equal(filled.rolledBack, false);
+  assert.deepEqual(filled.state.current?.layers[0]?.fill, { x: 10, y: 10, width: 100, height: 100 });
+
+  const rolled = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "selection.rectangle", arguments: { x: 300, y: 300, width: 200, height: 200 } },
+      { name: "layer.transform", arguments: { layerId: "does-not-exist", x: 0 } },
+    ],
+  });
+  assert.equal(rolled.ok, false);
+  assert.equal(rolled.rolledBack, true);
+  assert.deepEqual(rolled.state.current?.selection, { x: 10, y: 10, width: 100, height: 100 });
+});
+
+test("selection tools require an open document", async () => {
+  const bridge = new MockBridgeTransport();
+  for (const [name, args] of [
+    ["selection.rectangle", { x: 0, y: 0, width: 10, height: 10 }],
+    ["selection.ellipse", { x: 0, y: 0, width: 10, height: 10 }],
+    ["selection.polygon", { points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] }],
+    ["selection.magicWand", { x: 5, y: 5 }],
+  ] as const) {
+    const result = await execute(bridge, { operations: [{ name, arguments: args }] });
+    assert.equal(result.ok, false, name);
+    assert.equal(result.results[0]?.error?.code, "document_required", name);
+  }
 });
