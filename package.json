@@ -1,0 +1,22 @@
+{
+  "name": "compositor-mcp-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Deep Model Context Protocol integration for the Compositor macOS image editor",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @compositor-mcp/protocol && npm run build -w @compositor-mcp/server",
+    "clean": "npm run clean -ws --if-present",
+    "dev": "npm run dev -w @compositor-mcp/server",
+    "test": "npm run test -w @compositor-mcp/protocol && npm run test -w @compositor-mcp/server",
+    "typecheck": "npm run typecheck -w @compositor-mcp/protocol && npm run typecheck -w @compositor-mcp/server",
+    "check": "npm run typecheck && npm test && npm run parity",
+    "parity": "node scripts/check-capability-parity.mjs"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "license": "MIT"
+}

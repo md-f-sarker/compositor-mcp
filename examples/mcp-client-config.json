@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "compositor": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"
+      ]
+    }
+  }
+}
