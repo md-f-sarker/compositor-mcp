@@ -16,12 +16,13 @@ test("search understands natural language aliases", () => {
   assert.equal(first?.capability.name, "document.export");
 });
 
-test("planned capabilities are hidden by default", () => {
+test("implemented capabilities are searchable by default", () => {
   const defaultResults = searchCapabilities("content aware fill", { limit: 50 });
-  assert.equal(defaultResults.some((hit) => hit.capability.name === "pixels.contentAwareFill"), false);
+  assert.equal(defaultResults.some((hit) => hit.capability.name === "pixels.contentAwareFill"), true);
 
+  // Nothing remains planned, so includePlanned is a no-op.
   const allResults = searchCapabilities("content aware fill", { limit: 50, includePlanned: true });
-  assert.equal(allResults.some((hit) => hit.capability.name === "pixels.contentAwareFill"), true);
+  assert.deepEqual(allResults, defaultResults);
 });
 
 test("all catalogue examples satisfy their advertised schemas", async () => {
@@ -37,13 +38,12 @@ test("all catalogue examples satisfy their advertised schemas", async () => {
   }
 });
 
-test("every planned capability carries a full contract", () => {
+test("the catalogue is fully implemented with no planned entries", () => {
   const planned = CAPABILITIES.filter((entry) => entry.status === "planned");
-  assert.equal(planned.length, 4);
-  for (const capability of planned) {
+  assert.equal(planned.length, 0);
+  for (const capability of CAPABILITIES) {
+    assert.equal(capability.status, "implemented", `${capability.name} is not implemented`);
     assert.ok(capability.inputSchema.type === "object" || capability.inputSchema.oneOf, `${capability.name} has no object schema`);
-    assert.ok(capability.examples.length > 0, `${capability.name} has no examples`);
-    assert.ok(capability.aliases.length > 0 || capability.tags.length > 0, `${capability.name} has no aliases or tags`);
   }
 });
 

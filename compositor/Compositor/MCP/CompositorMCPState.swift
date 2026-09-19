@@ -66,6 +66,7 @@ struct CompositorMCPStateBuilder {
             "maskSourceId": .uuid(value.maskSourceID),
             "hasMask": .bool(value.mask != nil),
             "adjustment": .bool(value.adjustment != nil),
+            "adjustmentKind": value.adjustment.map { .string($0.kind.rawValue) } ?? .null,
             "shape": .bool(value.shape != nil),
             "transform": .object([
                 "x": .cgFloat(transform.origin.x),

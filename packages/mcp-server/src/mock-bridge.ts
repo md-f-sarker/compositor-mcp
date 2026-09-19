@@ -23,6 +23,12 @@ interface MockLayer {
   mask: boolean;
   /** True for layers created by paint.shape, like the real state builder's `shape` flag. */
   shape: boolean;
+  /** True for layers created by adjustment.add, like the real state builder's `adjustment` flag. */
+  adjustment: boolean;
+  /** The adjustment's AdjustmentKind raw value when adjustment is true, else null. */
+  adjustmentKind: string | null;
+  /** Last supplied adjustment parameters, retained so adjustment.update merges onto them. */
+  adjustmentParameters: JsonObject | null;
   /** Bounds of the last pixels.fill or paint.* stroke, approximating painted coverage; null when never painted. */
   fill: MockSelection | null;
 }
@@ -252,6 +258,9 @@ export class MockBridgeTransport implements BridgeTransport {
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
           shape: false,
+          adjustment: false,
+          adjustmentKind: null,
+          adjustmentParameters: null,
           fill: null,
         };
         document.layers.push(layer);
@@ -280,6 +289,9 @@ export class MockBridgeTransport implements BridgeTransport {
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
           shape: false,
+          adjustment: false,
+          adjustmentKind: null,
+          adjustmentParameters: null,
           fill: null,
         };
         document.layers.splice(topIndex + 1, 0, group);
@@ -649,6 +661,9 @@ export class MockBridgeTransport implements BridgeTransport {
           transform: { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height), rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
           shape: true,
+          adjustment: false,
+          adjustmentKind: null,
+          adjustmentParameters: null,
           fill: null,
         };
         const index = active ? document.layers.indexOf(active) + 1 : document.layers.length;
@@ -657,6 +672,106 @@ export class MockBridgeTransport implements BridgeTransport {
         document.selectedLayerIds = [layer.id];
         this.revision += 1;
         return layer as unknown as JsonValue;
+      }
+      case "adjustment.add": {
+        const document = this.requireDocument();
+        const kind = requiredString(args, "kind");
+        if (!ADJUSTMENT_KINDS.includes(kind)) {
+          throw new CompositorMcpError("invalid_arguments", `Unknown adjustment kind: ${kind}`);
+        }
+        const parameters = optionalObject(args, "parameters");
+        const active = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+        // Mirrors addAdjustment: inserts above the active layer, adopts its parent, and
+        // becomes the active layer; the layer name defaults to the kind.
+        const layer: MockLayer = {
+          id: randomUUID(),
+          name: optionalString(args, "name") ?? kind,
+          visible: true,
+          opacity: 1,
+          blendMode: "Normal",
+          parentId: active?.group === true ? active.id : active?.parentId ?? null,
+          group: false,
+          transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
+          mask: false,
+          shape: false,
+          adjustment: true,
+          adjustmentKind: kind,
+          adjustmentParameters: parameters ?? {},
+          fill: null,
+        };
+        const index = active ? document.layers.indexOf(active) + 1 : document.layers.length;
+        document.layers.splice(index, 0, layer);
+        document.activeLayerId = layer.id;
+        document.selectedLayerIds = [layer.id];
+        this.revision += 1;
+        return layer as unknown as JsonValue;
+      }
+      case "adjustment.update": {
+        const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
+        const kind = requiredString(args, "kind");
+        if (!ADJUSTMENT_KINDS.includes(kind)) {
+          throw new CompositorMcpError("invalid_arguments", `Unknown adjustment kind: ${kind}`);
+        }
+        if (!layer.adjustment) {
+          throw new CompositorMcpError("invalid_arguments", "The layer is not an adjustment layer.");
+        }
+        if (layer.adjustmentKind !== kind) {
+          throw new CompositorMcpError("invalid_arguments", `kind must match the layer's adjustment kind (${layer.adjustmentKind}).`);
+        }
+        const parameters = args["parameters"];
+        if (parameters === undefined || parameters === null || typeof parameters !== "object" || Array.isArray(parameters)) {
+          throw new CompositorMcpError("invalid_arguments", "parameters is required and must be an object.");
+        }
+        layer.adjustmentParameters = { ...layer.adjustmentParameters, ...(parameters as JsonObject) };
+        this.revision += 1;
+        return layer as unknown as JsonValue;
+      }
+      case "filter.apply": {
+        const document = this.requireDocument();
+        const kind = requiredString(args, "kind");
+        if (!FILTER_KINDS.includes(kind)) {
+          throw new CompositorMcpError("invalid_arguments", `Unknown filter kind: ${kind}`);
+        }
+        const settings = optionalObject(args, "settings");
+        const layer = this.filterTarget(document, kind);
+        if (kind === "Remove Background") {
+          // commitBackgroundMask semantics: the subject is kept via a new mask.
+          layer.mask = true;
+        } else {
+          // FilterEdit.blurMargin: the committed render can grow the layer — Gaussian by
+          // ceil(radius * 3 + 2), Motion Blur by ceil(distance / 2 + 2) document pixels.
+          const margin = kind === "Gaussian Blur"
+            ? Math.ceil((typeof settings?.["radius"] === "number" ? settings["radius"] : 1) * 3 + 2)
+            : kind === "Motion Blur"
+              ? Math.ceil((typeof settings?.["distance"] === "number" ? settings["distance"] : 10) / 2 + 2)
+              : 0;
+          layer.transform.x -= margin;
+          layer.transform.y -= margin;
+          layer.transform.width += margin * 2;
+          layer.transform.height += margin * 2;
+          layer.fill = document.selection
+            ? { ...document.selection }
+            : { x: layer.transform.x, y: layer.transform.y, width: layer.transform.width, height: layer.transform.height };
+        }
+        this.revision += 1;
+        return { applied: true, kind, layerId: layer.id, mask: layer.mask };
+      }
+      case "pixels.contentAwareFill": {
+        const document = this.requireDocument();
+        const layer = this.filterTarget(document, "Content-Aware Fill");
+        // Upstream CAF grows the layer so the fill can extend past its old edge.
+        const selection = document.selection!;
+        const left = Math.min(layer.transform.x, selection.x);
+        const top = Math.min(layer.transform.y, selection.y);
+        const right = Math.max(layer.transform.x + layer.transform.width, selection.x + selection.width);
+        const bottom = Math.max(layer.transform.y + layer.transform.height, selection.y + selection.height);
+        layer.transform.x = left;
+        layer.transform.y = top;
+        layer.transform.width = right - left;
+        layer.transform.height = bottom - top;
+        layer.fill = { ...selection };
+        this.revision += 1;
+        return { applied: true, kind: "Content-Aware Fill", layerId: layer.id, mask: layer.mask };
       }
       case "history.undo":
       case "history.redo":
@@ -742,6 +857,22 @@ export class MockBridgeTransport implements BridgeTransport {
     if (!layer) throw new CompositorMcpError("layer_not_found", `Layer not found: ${id}`);
     return layer;
   }
+
+  /// The layer a filter lands on, mirroring the bridge's requireFilterTarget: one selected
+  /// pixel layer (groups refused) and, for Content-Aware Fill, a live selection.
+  private filterTarget(document: MockDocument, kind: string): MockLayer {
+    const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+    if (!layer || document.selectedLayerIds.length !== 1) {
+      throw new CompositorMcpError("layer_required", "Select exactly one layer to filter.");
+    }
+    if (layer.group) {
+      throw new CompositorMcpError("invalid_arguments", "Filters apply to a pixel layer, not a group.");
+    }
+    if (kind === "Content-Aware Fill" && !document.selection) {
+      throw new CompositorMcpError("selection_required", "Content-Aware Fill needs a non-empty selection.");
+    }
+    return layer;
+  }
 }
 
 function requiredString(object: JsonObject, key: string): string {
@@ -789,6 +920,15 @@ function optionalBoolean(object: JsonObject, key: string): boolean | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "boolean") throw new CompositorMcpError("invalid_arguments", `${key} must be a boolean.`);
   return value;
+}
+
+function optionalObject(object: JsonObject, key: string): JsonObject | undefined {
+  const value = object[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new CompositorMcpError("invalid_arguments", `${key} must be an object.`);
+  }
+  return value as JsonObject;
 }
 
 interface Point {
@@ -912,6 +1052,13 @@ const BLUR_MODES = ["Blur", "Smudge", "Liquify"];
 const GRADIENT_SHAPES = ["Linear", "Radial"];
 const GRADIENT_STYLES = ["Foreground to Background", "Foreground to Transparent"];
 const SHAPE_KINDS = ["Rectangle", "Ellipse"];
+
+/// Upstream AdjustmentKind and FilterKind raw values, as the catalogue's oneOf branches list them.
+const ADJUSTMENT_KINDS = ["Hue/Saturation", "Levels", "Curves", "Exposure", "Gradient Map", "Grain"];
+const FILTER_KINDS = [
+  "Gaussian Blur", "Motion Blur", "Add Noise", "Lens Correction", "Remove Background",
+  "Content-Aware Fill", "Curves", "Exposure", "Gradient Map", "Grain",
+];
 
 function selectionMode(object: JsonObject): string {
   const mode = optionalString(object, "mode") ?? "replace";
