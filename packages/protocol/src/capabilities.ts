@@ -388,7 +388,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Resize canvas",
     description: "Change canvas bounds and anchor without scaling layer pixels.",
     category: "document",
-    status: "planned",
     aliases: ["canvas size", "expand canvas", "change canvas size"],
     tags: ["canvas", "resize", "anchor"],
     inputSchema: object(
@@ -409,7 +408,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Resize image",
     description: "Resample the whole document to a new pixel size and optional resolution.",
     category: "document",
-    status: "planned",
     aliases: ["resample image", "scale image", "change image size"],
     tags: ["image size", "resample"],
     inputSchema: object(
@@ -427,7 +425,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Crop document",
     description: "Crop or expand the document to an explicit rectangle.",
     category: "document",
-    status: "planned",
     aliases: ["crop", "trim canvas"],
     tags: ["crop", "canvas", "bounds"],
     inputSchema: object(
@@ -580,7 +577,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Ungroup layer folder",
     description: "Move a folder's children out and remove the folder.",
     category: "layer",
-    status: "planned",
     aliases: ["dissolve group", "ungroup layers"],
     tags: ["group", "folder"],
     inputSchema: object({ layerId }, ["layerId"]),
@@ -628,7 +624,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Free distort layer",
     description: "Place a layer using four document-space corner points.",
     category: "layer",
-    status: "planned",
     aliases: ["free distort", "perspective transform", "warp corners"],
     tags: ["transform", "distort", "perspective"],
     inputSchema: object(
@@ -697,7 +692,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Feather layer mask",
     description: "Feather a layer mask by a pixel radius.",
     category: "mask",
-    status: "planned",
     aliases: ["soften mask", "feather mask edge", "blur mask"],
     tags: ["feather", "mask"],
     inputSchema: object({ layerId, radius: number("Feather radius in pixels.", { minimum: 0, maximum: 10000 }) }, ["layerId", "radius"]),
