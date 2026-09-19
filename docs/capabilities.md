@@ -3,7 +3,7 @@
 _Generated from `packages/protocol/src/capabilities.ts` by `scripts/generate-capability-docs.mjs`._
 _Do not edit by hand — run `npm run docs:capabilities` and commit the result._
 
-62 operations: 52 implemented, 10 planned.
+62 operations: 58 implemented, 4 planned.
 `execute` rejects `planned` operations with `operation_not_implemented` until the bridge implements them.
 
 **Risk** — `read`: no mutation; `write`: mutates the document; `destructive`: requires
@@ -107,12 +107,12 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 
 | Operation | Title | Status | Risk | Txn | Parameters | Aliases & tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| `paint.brushStroke` | Paint brush stroke | planned | write | yes | `mode`?, `points`, `diameter`?, `hardness`?, `opacity`?, `color`? | aliases: brush, paint, draw, erase; tags: brush, stroke, draw |
-| `paint.spotHeal` | Spot-heal stroke | planned | write | yes | `points`, `diameter`?, `hardness`?, `opacity`?, `mode`? | aliases: heal, spot healing, remove blemish; tags: retouch, heal |
-| `paint.clone` | Clone-stamp stroke | planned | write | yes | `source`, `points`, `aligned`?, `sampleAllLayers`?, `diameter`?, `hardness`?, `opacity`? | aliases: clone stamp, clone source, stamp; tags: retouch, clone |
-| `paint.blur` | Blur or liquify stroke | planned | write | yes | `mode`?, `points`, `diameter`?, `hardness`?, `strength`? | aliases: smudge, liquify, blur brush, smear; tags: warp, smudge, liquify |
-| `paint.gradient` | Apply gradient | planned | write | yes | `start`, `end`, `shape`?, `style`?, `stops`?, `reversed`?, `opacity`? | aliases: gradient fill, draw gradient; tags: gradient, fill |
-| `paint.shape` | Draw shape | planned | write | yes | `kind`?, `x`, `y`, `width`, `height`, `cornerRadius`?, `color`?, `name`? | aliases: draw shape, rectangle, ellipse, rounded rectangle; tags: shape, vector |
+| `paint.brushStroke` | Paint brush stroke | implemented | write | yes | `mode`?, `points`, `diameter`?, `hardness`?, `opacity`?, `color`? | aliases: brush, paint, draw, erase; tags: brush, stroke, draw |
+| `paint.spotHeal` | Spot-heal stroke | implemented | write | yes | `points`, `diameter`?, `hardness`?, `opacity`?, `mode`? | aliases: heal, spot healing, remove blemish; tags: retouch, heal |
+| `paint.clone` | Clone-stamp stroke | implemented | write | yes | `source`, `points`, `aligned`?, `sampleAllLayers`?, `diameter`?, `hardness`?, `opacity`? | aliases: clone stamp, clone source, stamp; tags: retouch, clone |
+| `paint.blur` | Blur or liquify stroke | implemented | write | yes | `mode`?, `points`, `diameter`?, `hardness`?, `strength`? | aliases: smudge, liquify, blur brush, smear; tags: warp, smudge, liquify |
+| `paint.gradient` | Apply gradient | implemented | write | yes | `start`, `end`, `shape`?, `style`?, `stops`?, `reversed`?, `opacity`? | aliases: gradient fill, draw gradient; tags: gradient, fill |
+| `paint.shape` | Draw shape | implemented | write | yes | `kind`?, `x`, `y`, `width`, `height`, `cornerRadius`?, `color`?, `name`? | aliases: draw shape, rectangle, ellipse, rounded rectangle; tags: shape, vector |
 
 ## adjustment
 

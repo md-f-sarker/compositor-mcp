@@ -879,7 +879,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Paint brush stroke",
     description: "Paint or erase along a document-space point path with explicit brush settings.",
     category: "paint",
-    status: "planned",
     aliases: ["brush", "paint", "draw", "erase"],
     tags: ["brush", "stroke", "draw"],
     inputSchema: object(
@@ -913,7 +912,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Spot-heal stroke",
     description: "Run the content-aware spot healing brush along a point path.",
     category: "paint",
-    status: "planned",
     aliases: ["heal", "spot healing", "remove blemish"],
     tags: ["retouch", "heal"],
     inputSchema: object(
@@ -947,7 +945,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Clone-stamp stroke",
     description: "Clone from a source point along a destination path.",
     category: "paint",
-    status: "planned",
     aliases: ["clone stamp", "clone source", "stamp"],
     tags: ["retouch", "clone"],
     inputSchema: object(
@@ -982,7 +979,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Blur or liquify stroke",
     description: "Apply Compositor's blur, smudge or liquify brush along a path.",
     category: "paint",
-    status: "planned",
     aliases: ["smudge", "liquify", "blur brush", "smear"],
     tags: ["warp", "smudge", "liquify"],
     inputSchema: object(
@@ -1014,7 +1010,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Apply gradient",
     description: "Apply a configured gradient between two document-space points.",
     category: "paint",
-    status: "planned",
     aliases: ["gradient fill", "draw gradient"],
     tags: ["gradient", "fill"],
     inputSchema: object(
@@ -1072,7 +1067,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Draw shape",
     description: "Create a rectangle, rounded rectangle or ellipse shape layer.",
     category: "paint",
-    status: "planned",
     aliases: ["draw shape", "rectangle", "ellipse", "rounded rectangle"],
     tags: ["shape", "vector"],
     inputSchema: object(

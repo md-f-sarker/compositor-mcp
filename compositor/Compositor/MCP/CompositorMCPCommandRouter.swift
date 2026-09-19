@@ -6,9 +6,10 @@ import Foundation
 
 @MainActor
 final class CompositorMCPCommandRouter {
-    private let workspace: ProjectWorkspace
+    /// Internal rather than private so the paint extension (CompositorMCPPaint.swift) shares them.
+    let workspace: ProjectWorkspace
     private let paths: CompositorMCPPathPolicy
-    private var revision = 0
+    var revision = 0
     private var lastObservedFingerprint: String?
     private struct IdempotencyEntry {
         let fingerprint: String
@@ -28,7 +29,8 @@ final class CompositorMCPCommandRouter {
         "layer.setClippingMask", "layer.featherMask",
         "selection.get", "selection.all", "selection.none", "selection.invert", "selection.fromLayer", "selection.fromMask",
         "selection.rectangle", "selection.ellipse", "selection.polygon", "selection.magicWand",
-        "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "preview.render"
+        "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "preview.render",
+        "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape"
     ]
 
     private let destructive: Set<String> = ["layer.delete", "layer.merge", "layer.deleteMask", "pixels.clear"]
@@ -529,6 +531,8 @@ final class CompositorMCPCommandRouter {
             guard session.canInvert else { throw CompositorMCPCommandError(code: "pixel_edit_unavailable", message: "The active layer or mask cannot be inverted.") }
         case "preview.render":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+        case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
+            try validatePaint(operation.name, arguments: arguments, session: session)
         default:
             throw CompositorMCPCommandError(code: "operation_not_implemented", message: "\(operation.name) is not implemented.")
         }
@@ -648,7 +652,8 @@ final class CompositorMCPCommandRouter {
         return Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: true)
     }
 
-    private struct Outcome {
+    /// Internal so CompositorMCPPaint.swift can build paint outcomes.
+    struct Outcome {
         let value: CompositorMCPJSON
         let mutated: Bool
     }
@@ -1223,6 +1228,8 @@ final class CompositorMCPCommandRouter {
             guard session.canInvert else { throw CompositorMCPCommandError(code: "pixel_edit_unavailable", message: "The active layer or mask cannot be inverted.") }
             await session.invertPixels()
             return Outcome(value: .object(["inverted": .bool(true)]), mutated: true)
+        case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
+            return try await applyPaint(operation.name, arguments: arguments, session: session)
         case "preview.render":
             guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Compositor-MCP", isDirectory: true)
@@ -1279,7 +1286,8 @@ final class CompositorMCPCommandRouter {
         return id
     }
 
-    private func layerValue(_ layer: ImageLayer?) -> CompositorMCPJSON {
+    /// Internal so CompositorMCPPaint.swift can return the shape layer it creates.
+    func layerValue(_ layer: ImageLayer?) -> CompositorMCPJSON {
         guard let layer else { return .null }
         return CompositorMCPStateBuilder(workspace: workspace, revision: revision).layer(layer)
     }

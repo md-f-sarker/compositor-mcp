@@ -19,7 +19,7 @@ test("destructive operations require explicit confirmation", () => {
 
 test("planned operations are rejected", () => {
   assert.throws(
-    () => validateExecuteRequest({ operations: [{ name: "paint.brushStroke", arguments: {} }], dryRun: true }),
+    () => validateExecuteRequest({ operations: [{ name: "pixels.contentAwareFill", arguments: {} }], dryRun: true }),
     /not implemented/i,
   );
 });
@@ -411,6 +411,261 @@ test("atomic rectangle select + pixels.fill fills the region and rolls back on f
   assert.equal(rolled.ok, false);
   assert.equal(rolled.rolledBack, true);
   assert.deepEqual(rolled.state.current?.selection, { x: 10, y: 10, width: 100, height: 100 });
+});
+
+interface PaintOutcome {
+  applied: boolean;
+  layerId?: string;
+  mask?: boolean;
+  points?: number;
+  bounds?: MockBounds | null;
+}
+
+const addPaintableLayer = async (bridge: MockBridgeTransport, name = "Art") => {
+  const result = await handleExecute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name } }] });
+  const state = (result as { state: MockState }).state;
+  return state.current?.layers[state.current.layers.length - 1]?.id;
+};
+
+test("paint.brushStroke covers the path's bounds, single undo-style commit", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    operations: [
+      {
+        name: "paint.brushStroke",
+        arguments: {
+          points: [
+            { x: 40, y: 40 },
+            { x: 120, y: 90 },
+            { x: 200, y: 60 },
+          ],
+          diameter: 20,
+        },
+      },
+    ],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[0]?.value as PaintOutcome;
+  assert.equal(outcome.applied, true);
+  assert.equal(outcome.points, 3);
+  // 20 px brush: coverage is the point bounds grown by the 10 px radius.
+  assert.deepEqual(outcome.bounds, { x: 30, y: 30, width: 180, height: 70 });
+});
+
+test("paint.brushStroke paints a single-point dot and accepts erase mode", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const dot = await execute(bridge, {
+    operations: [{ name: "paint.brushStroke", arguments: { points: [{ x: 100, y: 100 }], diameter: 10 } }],
+  });
+  assert.equal(dot.ok, true);
+  assert.equal((dot.results[0]?.value as PaintOutcome).applied, true);
+  const erased = await execute(bridge, {
+    operations: [{ name: "paint.brushStroke", arguments: { mode: "erase", points: [{ x: 100, y: 100 }, { x: 120, y: 100 }] } }],
+  });
+  assert.equal(erased.ok, true);
+  assert.equal((erased.results[0]?.value as PaintOutcome).applied, true);
+});
+
+test("paint.brushStroke fully off-canvas is a no-op, not an error", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    operations: [{ name: "paint.brushStroke", arguments: { points: [{ x: -500, y: -500 }, { x: -400, y: -400 }] } }],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[0]?.value as PaintOutcome;
+  assert.equal(outcome.applied, false);
+  assert.equal(outcome.bounds, null);
+});
+
+test("paint.brushStroke on a group layer fails with pixel_edit_unavailable", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const first = await addPaintableLayer(bridge, "A");
+  const second = await addPaintableLayer(bridge, "B");
+  const grouped = await execute(bridge, {
+    operations: [
+      { name: "layer.select", arguments: { layerIds: [first, second] } },
+      { name: "layer.group", arguments: {} },
+    ],
+  });
+  assert.equal(grouped.ok, true);
+  const result = await execute(bridge, {
+    operations: [{ name: "paint.brushStroke", arguments: { points: [{ x: 10, y: 10 }] } }],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.results[0]?.error?.code, "pixel_edit_unavailable");
+});
+
+test("paint.spotHeal accepts every upstream healing mode", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  for (const mode of ["Content-Aware", "Create Texture", "Proximity Match"]) {
+    const result = await execute(bridge, {
+      operations: [{ name: "paint.spotHeal", arguments: { points: [{ x: 100, y: 100 }, { x: 140, y: 140 }], mode } }],
+    });
+    assert.equal(result.ok, true, mode);
+    assert.equal((result.results[0]?.value as PaintOutcome).applied, true, mode);
+  }
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "paint.spotHeal", arguments: { points: [{ x: 1, y: 1 }], mode: "Imaginary" } }],
+      }),
+    /invalid_arguments|must be one of/i,
+  );
+});
+
+test("paint.clone requires a source and samples it along the path", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "paint.clone", arguments: { points: [{ x: 10, y: 10 }] } }],
+      }),
+    /source.*required/i,
+  );
+  const result = await execute(bridge, {
+    operations: [
+      {
+        name: "paint.clone",
+        arguments: { source: { x: 100, y: 100 }, points: [{ x: 400, y: 300 }, { x: 460, y: 320 }], aligned: true, sampleAllLayers: false },
+      },
+    ],
+  });
+  assert.equal(result.ok, true);
+  assert.equal((result.results[0]?.value as PaintOutcome).applied, true);
+});
+
+test("paint.blur accepts Blur, Smudge and Liquify modes", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  for (const mode of ["Blur", "Smudge", "Liquify"]) {
+    const result = await execute(bridge, {
+      operations: [{ name: "paint.blur", arguments: { mode, points: [{ x: 50, y: 50 }, { x: 200, y: 200 }], strength: 0.5 } }],
+    });
+    assert.equal(result.ok, true, mode);
+    assert.equal((result.results[0]?.value as PaintOutcome).applied, true, mode);
+  }
+});
+
+test("paint.gradient commits a ramp and paint.shape creates a shape layer", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const gradient = await execute(bridge, {
+    operations: [{ name: "paint.gradient", arguments: { start: { x: 100, y: 100 }, end: { x: 700, y: 500 }, shape: "Linear" } }],
+  });
+  assert.equal(gradient.ok, true);
+  const gradientOutcome = gradient.results[0]?.value as PaintOutcome;
+  assert.equal(gradientOutcome.applied, true);
+  assert.deepEqual(gradientOutcome.bounds, { x: 0, y: 0, width: 1200, height: 800 });
+
+  const withStops = await execute(bridge, {
+    operations: [
+      {
+        name: "paint.gradient",
+        arguments: {
+          start: { x: 400, y: 300 },
+          end: { x: 600, y: 300 },
+          shape: "Radial",
+          stops: [
+            { offset: 0, color: "#FF8800" },
+            { offset: 0.5, color: "#00FF00" },
+            { offset: 1, color: "#0033FF" },
+          ],
+        },
+      },
+    ],
+  });
+  assert.equal(withStops.ok, true);
+
+  const shape = await execute(bridge, {
+    operations: [{ name: "paint.shape", arguments: { kind: "Rectangle", x: 50, y: 50, width: 200, height: 120, cornerRadius: 16, color: "#3366FF" } }],
+  });
+  assert.equal(shape.ok, true);
+  const layer = shape.results[0]?.value as { id: string; shape: boolean; transform: { x: number; y: number; width: number; height: number } };
+  assert.equal(layer.shape, true);
+  assert.deepEqual(layer.transform, { x: 50, y: 50, width: 200, height: 120, rotation: 0, flipX: false, flipY: false, sampling: "High quality" });
+  assert.equal(shape.state.current?.layers.at(-1)?.id, layer.id);
+});
+
+test("paint strokes clip to the active selection", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "selection.rectangle", arguments: { x: 100, y: 100, width: 200, height: 200 } },
+      { name: "paint.brushStroke", arguments: { points: [{ x: 50, y: 150 }, { x: 500, y: 150 }], diameter: 20 } },
+    ],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[1]?.value as PaintOutcome;
+  // The unclipped band would run to x=510; the selection cuts it off at x=300.
+  assert.deepEqual(outcome.bounds, { x: 100, y: 140, width: 200, height: 20 });
+});
+
+test("an atomic batch of two strokes rolls back as one", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const layerId = await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "paint.brushStroke", arguments: { points: [{ x: 10, y: 10 }, { x: 100, y: 10 }] } },
+      { name: "paint.brushStroke", arguments: { points: [{ x: 10, y: 50 }, { x: 100, y: 50 }] } },
+      { name: "layer.transform", arguments: { layerId: "does-not-exist", x: 0 } },
+    ],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.rolledBack, true);
+  const layer = result.state.current?.layers.find((candidate) => candidate.id === layerId);
+  assert.equal(layer?.fill, null);
+});
+
+test("paint operations require a document", async () => {
+  const bridge = new MockBridgeTransport();
+  for (const [name, args] of [
+    ["paint.brushStroke", { points: [{ x: 1, y: 1 }] }],
+    ["paint.spotHeal", { points: [{ x: 1, y: 1 }] }],
+    ["paint.clone", { source: { x: 0, y: 0 }, points: [{ x: 1, y: 1 }] }],
+    ["paint.blur", { points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] }],
+    ["paint.gradient", { start: { x: 0, y: 0 }, end: { x: 10, y: 10 } }],
+    ["paint.shape", { x: 0, y: 0, width: 10, height: 10 }],
+  ] as const) {
+    const result = await execute(bridge, { operations: [{ name, arguments: args }] });
+    assert.equal(result.ok, false, name);
+    assert.equal(result.results[0]?.error?.code, "document_required", name);
+  }
+});
+
+test("paint stroke points are schema-bounded and validated", () => {
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "paint.brushStroke", arguments: { points: [] } }],
+      }),
+    /at least 1/i,
+  );
+  const tooMany = Array.from({ length: 100_001 }, (_, index) => ({ x: index % 1000, y: index % 500 }));
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "paint.brushStroke", arguments: { points: tooMany } }],
+      }),
+    /at most 100000/i,
+  );
 });
 
 test("selection tools require an open document", async () => {

@@ -21,7 +21,9 @@ interface MockLayer {
   group: boolean;
   transform: { x: number; y: number; width: number; height: number; rotation: number; flipX: boolean; flipY: boolean; sampling: string };
   mask: boolean;
-  /** Bounds of the last pixels.fill, approximating painted coverage; null when never filled. */
+  /** True for layers created by paint.shape, like the real state builder's `shape` flag. */
+  shape: boolean;
+  /** Bounds of the last pixels.fill or paint.* stroke, approximating painted coverage; null when never painted. */
   fill: MockSelection | null;
 }
 
@@ -249,6 +251,7 @@ export class MockBridgeTransport implements BridgeTransport {
           group: false,
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
+          shape: false,
           fill: null,
         };
         document.layers.push(layer);
@@ -276,6 +279,7 @@ export class MockBridgeTransport implements BridgeTransport {
           group: true,
           transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
           mask: false,
+          shape: false,
           fill: null,
         };
         document.layers.splice(topIndex + 1, 0, group);
@@ -489,6 +493,171 @@ export class MockBridgeTransport implements BridgeTransport {
         this.revision += 1;
         return { filled: true, target };
       }
+      case "paint.brushStroke":
+      case "paint.spotHeal":
+      case "paint.clone":
+      case "paint.blur": {
+        const document = this.requireDocument();
+        const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+        if (!layer || document.selectedLayerIds.length !== 1) {
+          throw new CompositorMcpError("layer_required", "Select exactly one layer to paint on.");
+        }
+        if (layer.group) {
+          throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be painted.");
+        }
+        const points = strokePoints(args);
+        const diameter = optionalNumber(args, "diameter") ?? 40;
+        if (diameter < 1 || diameter > 2000) {
+          throw new CompositorMcpError("invalid_arguments", "diameter must be between 1 and 2,000 pixels.");
+        }
+        const hardness = optionalNumber(args, "hardness") ?? 1;
+        if (hardness < 0 || hardness > 1) {
+          throw new CompositorMcpError("invalid_arguments", "hardness must be between 0 and 1.");
+        }
+        const strength = optionalNumber(args, operation.name === "paint.blur" ? "strength" : "opacity") ?? 1;
+        if (strength < 0.01 || strength > 1) {
+          throw new CompositorMcpError("invalid_arguments", `${operation.name === "paint.blur" ? "strength" : "opacity"} must be between 0.01 and 1.`);
+        }
+        switch (operation.name) {
+          case "paint.brushStroke": {
+            const mode = optionalString(args, "mode") ?? "paint";
+            if (mode !== "paint" && mode !== "erase") {
+              throw new CompositorMcpError("invalid_arguments", "mode must be paint or erase.");
+            }
+            optionalHexColor(args, "color");
+            break;
+          }
+          case "paint.spotHeal": {
+            const mode = optionalString(args, "mode") ?? "Content-Aware";
+            if (!SPOT_HEAL_MODES.includes(mode)) {
+              throw new CompositorMcpError("invalid_arguments", "mode must be Content-Aware, Create Texture or Proximity Match.");
+            }
+            break;
+          }
+          case "paint.clone": {
+            requiredPoint(args, "source");
+            optionalBoolean(args, "aligned");
+            optionalBoolean(args, "sampleAllLayers");
+            break;
+          }
+          default: {
+            const mode = optionalString(args, "mode") ?? "Blur";
+            if (!BLUR_MODES.includes(mode)) {
+              throw new CompositorMcpError("invalid_arguments", "mode must be Blur, Smudge or Liquify.");
+            }
+            break;
+          }
+        }
+        // Approximation: coverage is the point bounds grown by the brush radius, clipped
+        // to the canvas and the active selection — the mock stores no pixels.
+        const bounds = strokeBounds(points, diameter / 2, document);
+        if (!bounds) {
+          return { applied: false, layerId: layer.id, mask: false, points: points.length, bounds: null };
+        }
+        layer.fill = bounds;
+        this.revision += 1;
+        return { applied: true, layerId: layer.id, mask: false, points: points.length, bounds: boundsJson(bounds) };
+      }
+      case "paint.gradient": {
+        const document = this.requireDocument();
+        const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+        if (!layer || document.selectedLayerIds.length !== 1) {
+          throw new CompositorMcpError("layer_required", "Select exactly one layer to paint on.");
+        }
+        if (layer.group) {
+          throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be painted.");
+        }
+        const start = requiredPoint(args, "start");
+        const end = requiredPoint(args, "end");
+        const shape = optionalString(args, "shape") ?? "Linear";
+        if (!GRADIENT_SHAPES.includes(shape)) {
+          throw new CompositorMcpError("invalid_arguments", "shape must be Linear or Radial.");
+        }
+        const style = optionalString(args, "style") ?? "Foreground to Transparent";
+        if (!GRADIENT_STYLES.includes(style)) {
+          throw new CompositorMcpError("invalid_arguments", "style must be Foreground to Background or Foreground to Transparent.");
+        }
+        const opacity = optionalNumber(args, "opacity") ?? 1;
+        if (opacity < 0 || opacity > 1) {
+          throw new CompositorMcpError("invalid_arguments", "opacity must be between 0 and 1.");
+        }
+        optionalBoolean(args, "reversed");
+        const stops = args["stops"];
+        if (stops !== undefined && stops !== null) {
+          if (!Array.isArray(stops) || stops.length < 2 || stops.length > 32) {
+            throw new CompositorMcpError("invalid_arguments", "stops must be an array of 2 to 32 colour stops.");
+          }
+          for (const stop of stops) {
+            if (stop === null || typeof stop !== "object" || Array.isArray(stop)) {
+              throw new CompositorMcpError("invalid_arguments", "stops must contain {offset, color} entries.");
+            }
+            const { offset, color } = stop as JsonObject;
+            if (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0 || offset > 1 || typeof color !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(color)) {
+              throw new CompositorMcpError("invalid_arguments", "stops must contain {offset, color} entries with offset between 0 and 1.");
+            }
+          }
+        }
+        // A sub-half-pixel line is the click the gradient tool discards.
+        if (Math.hypot(end.x - start.x, end.y - start.y) < 0.5 || opacity <= 0) {
+          return { applied: false, layerId: layer.id, mask: false, points: 0, bounds: null };
+        }
+        const bounds: MockSelection = document.selection
+          ? { ...document.selection }
+          : { x: 0, y: 0, width: document.width, height: document.height };
+        layer.fill = bounds;
+        this.revision += 1;
+        return { applied: true, layerId: layer.id, mask: false, points: 0, bounds: boundsJson(bounds) };
+      }
+      case "paint.shape": {
+        const document = this.requireDocument();
+        const kind = optionalString(args, "kind") ?? "Rectangle";
+        if (!SHAPE_KINDS.includes(kind)) {
+          throw new CompositorMcpError("invalid_arguments", "kind must be Rectangle or Ellipse.");
+        }
+        const x = requiredNumber(args, "x");
+        const y = requiredNumber(args, "y");
+        const width = requiredNumber(args, "width");
+        const height = requiredNumber(args, "height");
+        if (Math.round(width) < 1 || Math.round(width) > 30_000 || Math.round(height) < 1 || Math.round(height) > 30_000) {
+          throw new CompositorMcpError("invalid_arguments", "width and height must be between 1 and 30,000 pixels.");
+        }
+        const cornerRadius = optionalNumber(args, "cornerRadius") ?? 0;
+        if (cornerRadius < 0 || cornerRadius > 15_000) {
+          throw new CompositorMcpError("invalid_arguments", "cornerRadius must be between 0 and 15,000 pixels.");
+        }
+        if (Math.round(width) * Math.round(height) > 100_000_000) {
+          throw new CompositorMcpError("invalid_arguments", "That shape is too large. A shape can cover up to 100 megapixels.");
+        }
+        optionalHexColor(args, "color");
+        let name = optionalString(args, "name");
+        if (!name) {
+          // nextShapeName: "Rectangle 1", "Ellipse 2", … skipping names already present.
+          const names = new Set(document.layers.map((layer) => layer.name));
+          let number = 1;
+          while (names.has(`${kind} ${number}`)) number += 1;
+          name = `${kind} ${number}`;
+        }
+        const active = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+        const layer: MockLayer = {
+          id: randomUUID(),
+          name,
+          visible: true,
+          opacity: 1,
+          blendMode: "Normal",
+          parentId: active?.group === true ? active.id : active?.parentId ?? null,
+          group: false,
+          transform: { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height), rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
+          mask: false,
+          shape: true,
+          fill: null,
+        };
+        const index = active ? document.layers.indexOf(active) + 1 : document.layers.length;
+        document.layers.splice(index, 0, layer);
+        document.activeLayerId = layer.id;
+        document.selectedLayerIds = [layer.id];
+        this.revision += 1;
+        return layer as unknown as JsonValue;
+      }
       case "history.undo":
       case "history.redo":
         return { supportedInMock: false };
@@ -627,6 +796,63 @@ interface Point {
   y: number;
 }
 
+function requiredPoint(object: JsonObject, key: string): Point {
+  const value = object[key];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new CompositorMcpError("invalid_arguments", `${key} must be an {x, y} point.`);
+  }
+  const { x, y } = value as JsonObject;
+  if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+    throw new CompositorMcpError("invalid_arguments", `${key} must be an {x, y} point.`);
+  }
+  return { x, y };
+}
+
+/// Stroke paths are bounded like the catalogue schema (1–100,000 points).
+function strokePoints(object: JsonObject): Point[] {
+  const points = requiredPoints(object, "points");
+  if (points.length < 1 || points.length > 100_000) {
+    throw new CompositorMcpError("invalid_arguments", "points must be an array of 1 to 100,000 {x, y} points.");
+  }
+  return points;
+}
+
+function optionalHexColor(object: JsonObject, key: string): void {
+  const value = optionalString(object, key);
+  if (value !== undefined && !/^#[0-9A-Fa-f]{6}$/.test(value)) {
+    throw new CompositorMcpError("invalid_arguments", `${key} must be a six-digit hex colour.`);
+  }
+}
+
+/// Approximate painted coverage: the point bounds grown by the brush radius, clipped to
+/// the canvas, then to the active selection like the real stroke's selection clip.
+/// Null when nothing would land — the no-op stroke outcome.
+function strokeBounds(points: Point[], radius: number, document: MockDocument): MockSelection | null {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  let left = Math.max(0, Math.min(...xs) - radius);
+  let top = Math.max(0, Math.min(...ys) - radius);
+  let right = Math.min(document.width, Math.max(...xs) + radius);
+  let bottom = Math.min(document.height, Math.max(...ys) + radius);
+  if (document.selection) {
+    const selection = document.selection;
+    const selRight = selection.x + selection.width;
+    const selBottom = selection.y + selection.height;
+    left = Math.max(left, selection.x);
+    top = Math.max(top, selection.y);
+    right = Math.min(right, selRight);
+    bottom = Math.min(bottom, selBottom);
+  }
+  if (right <= left || bottom <= top) return null;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/// A fresh literal: JsonValue needs an implicit index signature, which interface-typed
+/// values don't carry.
+function boundsJson(bounds: MockSelection): JsonObject {
+  return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+}
+
 function requiredPoints(object: JsonObject, key: string): Point[] {
   const value = object[key];
   if (!Array.isArray(value)) {
@@ -680,6 +906,12 @@ function isUsableDistortCorners(corners: Point[]): boolean {
 const CANVAS_ANCHORS = ["top-left", "top", "top-right", "left", "centre", "right", "bottom-left", "bottom", "bottom-right"];
 
 const WAND_SAMPLE_SIZES = ["Point Sample", "3 by 3 Average", "5 by 5 Average"];
+
+const SPOT_HEAL_MODES = ["Content-Aware", "Create Texture", "Proximity Match"];
+const BLUR_MODES = ["Blur", "Smudge", "Liquify"];
+const GRADIENT_SHAPES = ["Linear", "Radial"];
+const GRADIENT_STYLES = ["Foreground to Background", "Foreground to Transparent"];
+const SHAPE_KINDS = ["Rectangle", "Ellipse"];
 
 function selectionMode(object: JsonObject): string {
   const mode = optionalString(object, "mode") ?? "replace";
