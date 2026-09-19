@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "allowedRoots": [
+    "/Users/example/Pictures",
+    "/Users/example/Downloads"
+  ],
+  "auditLogging": true
+}

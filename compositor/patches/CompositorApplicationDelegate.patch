@@ -1,0 +1,28 @@
+diff --git a/Compositor/IO/CompositorApplicationDelegate.swift b/Compositor/IO/CompositorApplicationDelegate.swift
+--- a/Compositor/IO/CompositorApplicationDelegate.swift
++++ b/Compositor/IO/CompositorApplicationDelegate.swift
+@@ -3,6 +3,7 @@ import Sparkle
+ 
+ final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
+     let workspace = ProjectWorkspace()
++    private var mcpBridge: CompositorMCPBridge?
+     var session: EditorSession { workspace.current.session }
+     var projects: ProjectController { workspace.current.controller }
+     var showEditor: (() -> Void)?
+@@ -27,9 +28,16 @@ final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
+     }
+ 
+     func applicationDidFinishLaunching(_ notification: Notification) {
++        let bridge = CompositorMCPBridge(workspace: workspace)
++        mcpBridge = bridge
++        bridge.start()
+         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [updater] in updater.startUpdater() }
+     }
+ 
++    func applicationWillTerminate(_ notification: Notification) {
++        mcpBridge?.stop()
++    }
++
+     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+         if !flag { showEditor?() }
+         return true
