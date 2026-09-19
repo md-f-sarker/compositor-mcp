@@ -64,48 +64,50 @@ The Swift integration was prepared against upstream Compositor commit `a19db9011
 
 ## Install
 
-### 1. Build the MCP server
+### 1. Install the native bridge into Compositor
+
+The npm package bundles the installer and the Swift bridge sources:
 
 ```bash
-npm install
-npm run check
-npm run build
+npx -y compositor-mcp install-bridge /absolute/path/to/Compositor
 ```
 
-### 2. Install the native bridge into Compositor
+Compositor uses Xcode file-system-synchronised groups, so the Swift files under `Compositor/MCP` are picked up without hand-editing the project file. Open `Compositor.xcodeproj`, select the **Compositor** scheme, build and run it once.
 
-```bash
-./scripts/install-into-compositor.sh /absolute/path/to/Compositor
-```
+Working from a source checkout instead? `./scripts/install-into-compositor.sh` does the same thing.
 
-Compositor uses Xcode file-system-synchronised groups, so the Swift files under `Compositor/MCP` are picked up without hand-editing the project file. Open `Compositor.xcodeproj`, select the **Compositor** scheme and build.
-
-### 3. Authorise filesystem roots
+### 2. Authorise filesystem roots
 
 File operations are denied unless their paths are inside an explicitly allowed root. The directory containing the currently open `.comp` project is added automatically.
 
 ```bash
-./scripts/configure-compositor.sh "$HOME/Pictures" "$HOME/Downloads"
+npx -y compositor-mcp configure "$HOME/Pictures" "$HOME/Downloads"
 ```
 
 Restart Compositor after changing configuration.
 
-### 4. Add the MCP server to your client
+### 3. Verify the setup
 
-Use an absolute path to the built entry point:
+```bash
+npx -y compositor-mcp doctor
+```
+
+`doctor` checks the bridge discovery file, pings the running app, and reports the app version, protocol, implemented capability count, revision and authorised roots.
+
+### 4. Add the MCP server to your client
 
 ```json
 {
   "mcpServers": {
     "compositor": {
-      "command": "node",
-      "args": ["/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "compositor-mcp"]
     }
   }
 }
 ```
 
-More examples are in [`examples/`](examples/).
+For a development checkout, point the client at the built entry point instead: `node /absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js`. More examples are in [`examples/`](examples/).
 
 ## Using the two tools
 

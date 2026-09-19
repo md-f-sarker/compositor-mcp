@@ -2,6 +2,7 @@
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import type { BridgeTransport } from "./bridge-client.js";
 import { SocketBridgeTransport } from "./bridge-client.js";
+import { runCli } from "./cli.js";
 import { MockBridgeTransport } from "./mock-bridge.js";
 import { createCompositorMcpServer } from "./server.js";
 
@@ -11,4 +12,14 @@ function createBridge(): BridgeTransport {
     : new SocketBridgeTransport();
 }
 
-await serveStdio(() => createCompositorMcpServer(createBridge()));
+const args = process.argv.slice(2);
+
+if (args.length === 0 || args[0] === "serve") {
+  await serveStdio(() => createCompositorMcpServer(createBridge()));
+} else {
+  process.exitCode = await runCli(args, {
+    out: (line) => process.stdout.write(`${line}\n`),
+    err: (line) => process.stderr.write(`${line}\n`),
+    env: process.env,
+  });
+}
