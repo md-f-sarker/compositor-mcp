@@ -8,11 +8,14 @@
   ],
   "scripts": {
     "build": "npm run build -w @compositor-mcp/protocol && npm run build -w @compositor-mcp/server",
+    "build:protocol": "npm run build -w @compositor-mcp/protocol",
     "clean": "npm run clean -ws --if-present",
     "dev": "npm run dev -w @compositor-mcp/server",
-    "test": "npm run test -w @compositor-mcp/protocol && npm run test -w @compositor-mcp/server",
-    "typecheck": "npm run typecheck -w @compositor-mcp/protocol && npm run typecheck -w @compositor-mcp/server",
-    "check": "npm run typecheck && npm test && npm run parity",
+    "test": "npm run build:protocol && npm run test:packages",
+    "test:packages": "npm run test -w @compositor-mcp/protocol && npm run test -w @compositor-mcp/server",
+    "typecheck": "npm run build:protocol && npm run typecheck:packages",
+    "typecheck:packages": "npm run typecheck -w @compositor-mcp/protocol && npm run typecheck -w @compositor-mcp/server",
+    "check": "npm run build:protocol && npm run typecheck:packages && npm run test:packages && npm run parity",
     "parity": "node scripts/check-capability-parity.mjs"
   },
   "engines": {
