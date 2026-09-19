@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 import CryptoKit
 import Foundation
 
@@ -19,10 +20,12 @@ final class CompositorMCPCommandRouter {
     private let implemented: Set<String> = [
         "app.ping", "app.getState", "workspace.list", "workspace.select",
         "document.create", "document.open", "document.save", "document.importImages", "document.export", "document.flip",
+        "document.resizeCanvas", "document.resizeImage", "document.crop",
         "history.undo", "history.redo",
         "layer.list", "layer.select", "layer.addBlank", "layer.duplicate", "layer.rename", "layer.delete",
-        "layer.setVisibility", "layer.setOpacity", "layer.setBlendMode", "layer.move", "layer.group", "layer.merge",
-        "layer.flip", "layer.transform", "layer.addMask", "layer.deleteMask", "layer.setMaskLinked", "layer.setClippingMask",
+        "layer.setVisibility", "layer.setOpacity", "layer.setBlendMode", "layer.move", "layer.group", "layer.ungroup", "layer.merge",
+        "layer.flip", "layer.transform", "layer.distort", "layer.addMask", "layer.deleteMask", "layer.setMaskLinked",
+        "layer.setClippingMask", "layer.featherMask",
         "selection.get", "selection.all", "selection.none", "selection.invert", "selection.fromLayer", "selection.fromMask",
         "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "preview.render"
     ]
@@ -302,6 +305,32 @@ final class CompositorMCPCommandRouter {
         case "document.flip":
             try validateAxis(arguments.requiredString("axis"))
             guard session.canEditLayers else { throw CompositorMCPCommandError(code: "document_unavailable", message: "The canvas cannot be flipped while editing is unavailable.") }
+        case "document.resizeCanvas":
+            let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
+            guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
+                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and 30,000 pixels.")
+            }
+            let anchor = try arguments.optionalString("anchor") ?? "centre"
+            guard canvasAnchor(anchor) != nil else { throw CompositorMCPCommandError.invalid("Unknown anchor: \(anchor)") }
+            guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+        case "document.resizeImage":
+            let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
+            guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
+                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and 30,000 pixels.")
+            }
+            if let resolution = try arguments.optionalDouble("resolution"), !(1...2400).contains(resolution) {
+                throw CompositorMCPCommandError.invalid("resolution must be between 1 and 2,400 DPI.")
+            }
+            guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+        case "document.crop":
+            let rect = try requireCropRect(arguments)
+            guard CropGeometry.valid(rect) else {
+                throw CompositorMCPCommandError.invalid("The crop rectangle is outside Compositor's limits.")
+            }
+            guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            guard rect.intersects(CGRect(origin: .zero, size: document.size)) else {
+                throw CompositorMCPCommandError.invalid("The crop rectangle does not intersect the canvas.")
+            }
         case "history.undo":
             guard session.canUndo else { throw CompositorMCPCommandError(code: "undo_unavailable", message: "Nothing can be undone.") }
         case "history.redo":
@@ -373,6 +402,13 @@ final class CompositorMCPCommandRouter {
             guard !session.selectedLayerIDs.isEmpty, session.canEditLayers else {
                 throw CompositorMCPCommandError(code: "layer_required", message: "Select at least one editable layer first.")
             }
+        case "layer.ungroup":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            let layer = try requireLayer(id, session: session)
+            guard layer.isGroup else { throw CompositorMCPCommandError.invalid("The layer is not a group.") }
+            guard session.canEditLayers else {
+                throw CompositorMCPCommandError(code: "ungroup_unavailable", message: "The group cannot be dissolved while another edit is active.")
+            }
         case "layer.merge":
             if let value = try arguments.optionalString("layerId") {
                 let id = try resolveLayer(value, session: session)
@@ -394,6 +430,10 @@ final class CompositorMCPCommandRouter {
                !LayerSampling.allCases.contains(where: { $0.rawValue.caseInsensitiveCompare(requested) == .orderedSame }) {
                 throw CompositorMCPCommandError.invalid("Unknown sampling mode: \(requested)")
             }
+        case "layer.distort":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            try requireLayer(id, session: session)
+            _ = try requireDistortCorners(arguments)
         case "layer.addMask":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             let mode = try arguments.optionalString("mode") ?? "reveal"
@@ -416,6 +456,15 @@ final class CompositorMCPCommandRouter {
             let layer = try requireLayer(id, session: session)
             if (layer.maskSourceID != nil) != enabled, !session.canToggleClippingMask(id) {
                 throw CompositorMCPCommandError(code: "clipping_mask_unavailable", message: "This layer cannot change its clipping-mask relationship.")
+            }
+        case "layer.featherMask":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            let radius = try arguments.requiredDouble("radius")
+            guard (0...10_000).contains(radius) else { throw CompositorMCPCommandError.invalid("radius must be between 0 and 10,000 pixels.") }
+            let layer = try requireLayer(id, session: session)
+            guard layer.mask != nil else { throw CompositorMCPCommandError.notFound("Layer mask not found.") }
+            guard session.canEditLayers else {
+                throw CompositorMCPCommandError(code: "mask_edit_unavailable", message: "The mask cannot be edited while another edit is active.")
             }
         case "selection.all":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
@@ -470,6 +519,40 @@ final class CompositorMCPCommandRouter {
         guard axis == "horizontal" || axis == "vertical" else {
             throw CompositorMCPCommandError.invalid("axis must be horizontal or vertical.")
         }
+    }
+
+    /// `CanvasSizeOptions.anchor` is row-major, top-left through bottom-right.
+    private func canvasAnchor(_ value: String) -> Int? {
+        [
+            "top-left": 0, "top": 1, "top-right": 2,
+            "left": 3, "centre": 4, "right": 5,
+            "bottom-left": 6, "bottom": 7, "bottom-right": 8
+        ][value]
+    }
+
+    /// The crop rect snapped to whole pixels, exactly as the crop tool's drags are.
+    private func requireCropRect(_ arguments: [String: CompositorMCPJSON]) throws -> CGRect {
+        let x = try arguments.requiredDouble("x"), y = try arguments.requiredDouble("y")
+        let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
+        return CropGeometry.snapped(CGRect(x: x, y: y, width: width, height: height))
+    }
+
+    /// Four document-space corner points in transform-handle order (top-left, top-right,
+    /// bottom-right, bottom-left), checked the same way `previewCorners` is.
+    private func requireDistortCorners(_ arguments: [String: CompositorMCPJSON]) throws -> [CGPoint] {
+        guard let raw = arguments["corners"]?.array, raw.count == 4 else {
+            throw CompositorMCPCommandError.invalid("corners must be an array of four points.")
+        }
+        let corners = try raw.map { value -> CGPoint in
+            guard let point = value.object, let x = point["x"]?.number, let y = point["y"]?.number else {
+                throw CompositorMCPCommandError.invalid("corners must contain {x, y} points.")
+            }
+            return CGPoint(x: x, y: y)
+        }
+        guard DistortWarp.isUsable(corners) else {
+            throw CompositorMCPCommandError.invalid("corners must describe a convex, non-degenerate quadrilateral.")
+        }
+        return corners
     }
 
     private struct Outcome {
@@ -581,6 +664,73 @@ final class CompositorMCPCommandRouter {
             guard axis == "horizontal" || axis == "vertical" else { throw CompositorMCPCommandError.invalid("axis must be horizontal or vertical.") }
             session.flipCanvas(horizontally: axis == "horizontal")
             return Outcome(value: .object(["axis": .string(axis)]), mutated: true)
+        case "document.resizeCanvas":
+            let anchor = try arguments.optionalString("anchor") ?? "centre"
+            guard let anchorIndex = canvasAnchor(anchor) else { throw CompositorMCPCommandError.invalid("Unknown anchor: \(anchor)") }
+            let width = Int(try arguments.requiredDouble("width").rounded())
+            let height = Int(try arguments.requiredDouble("height").rounded())
+            guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            session.isProjectBusy = true
+            defer { session.isProjectBusy = false }
+            do {
+                let resized = try await CanvasResizer.shared.resize(snapshot,
+                    to: CanvasSizeOptions(width: width, height: height, anchor: anchorIndex))
+                session.applyDocumentSize(resized, actionName: "Canvas Size")
+            } catch {
+                throw CompositorMCPCommandError.invalid(error.localizedDescription)
+            }
+            return Outcome(value: .object([
+                "documentId": .uuid(session.document?.id),
+                "width": .int(session.document?.width ?? width),
+                "height": .int(session.document?.height ?? height),
+                "anchor": .string(anchor)
+            ]), mutated: true)
+        case "document.resizeImage":
+            let width = Int(try arguments.requiredDouble("width").rounded())
+            let height = Int(try arguments.requiredDouble("height").rounded())
+            guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            let resolution = try arguments.optionalDouble("resolution") ?? snapshot.manifest.resolution ?? 72
+            session.isProjectBusy = true
+            defer { session.isProjectBusy = false }
+            do {
+                let resized = try await ImageResizer.shared.resize(snapshot,
+                    to: ImageSizeOptions(width: width, height: height, resolution: resolution))
+                session.applyImageSize(resized)
+            } catch {
+                throw CompositorMCPCommandError.invalid(error.localizedDescription)
+            }
+            return Outcome(value: .object([
+                "documentId": .uuid(session.document?.id),
+                "width": .int(session.document?.width ?? width),
+                "height": .int(session.document?.height ?? height),
+                "resolution": .number(session.document?.resolution ?? resolution)
+            ]), mutated: true)
+        case "document.crop":
+            let rect = try requireCropRect(arguments)
+            guard CropGeometry.valid(rect) else {
+                throw CompositorMCPCommandError.invalid("The crop rectangle is outside Compositor's limits.")
+            }
+            guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            guard rect.intersects(CGRect(origin: .zero, size: document.size)) else {
+                throw CompositorMCPCommandError.invalid("The crop rectangle does not intersect the canvas.")
+            }
+            session.cropError = nil
+            session.cropRect = rect
+            await session.commitCrop()
+            if let message = session.cropError {
+                session.cropError = nil
+                session.cancelCrop()
+                throw CompositorMCPCommandError(code: "crop_failed", message: message)
+            }
+            guard session.cropRect == nil, let cropped = session.document else {
+                session.cancelCrop()
+                throw CompositorMCPCommandError(code: "crop_unavailable", message: "The crop could not be committed while another edit is active.")
+            }
+            return Outcome(value: .object([
+                "documentId": .uuid(cropped.id),
+                "x": .number(rect.minX), "y": .number(rect.minY),
+                "width": .int(cropped.width), "height": .int(cropped.height)
+            ]), mutated: true)
         case "history.undo":
             guard session.canUndo else { throw CompositorMCPCommandError(code: "undo_unavailable", message: "Nothing can be undone.") }
             session.undo()
@@ -713,6 +863,51 @@ final class CompositorMCPCommandRouter {
                 throw CompositorMCPCommandError(code: "group_failed", message: "The selected layers could not be grouped.")
             }
             return Outcome(value: layerValue(session.activeLayer), mutated: true)
+        case "layer.ungroup":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            guard session.canEditLayers, var layers = session.document?.layers,
+                  let slot = layers.firstIndex(where: { $0.id == id }), layers[slot].isGroup else {
+                if session.document?.layers.first(where: { $0.id == id })?.isGroup == false {
+                    throw CompositorMCPCommandError.invalid("The layer is not a group.")
+                }
+                guard session.document?.layers.contains(where: { $0.id == id }) == true else {
+                    throw CompositorMCPCommandError.notFound("Layer not found.")
+                }
+                throw CompositorMCPCommandError(code: "ungroup_unavailable", message: "The group cannot be dissolved while another edit is active.")
+            }
+            // Compositor has no native ungroup: the group's direct children take its slot among
+            // its siblings in stack order (bottom to top), inside one undo entry. Children that are
+            // themselves groups keep their subtrees, so only the top level dissolves.
+            let parent = layers[slot].parentID
+            let rank = layers.filter { $0.parentID == parent }.firstIndex(where: { $0.id == id }) ?? 0
+            var children = layers.filter { $0.parentID == id }
+            for index in children.indices { children[index].parentID = parent }
+            layers.removeAll { $0.id == id || $0.parentID == id }
+            var insertion = layers.count
+            var seen = 0
+            for (index, layer) in layers.enumerated() where layer.parentID == parent {
+                if seen == rank { insertion = index; break }
+                seen += 1
+            }
+            layers.insert(contentsOf: children, at: insertion)
+            for child in children { EditorSession.adoptClipping(child.id, in: &layers) }
+            EditorSession.releaseDetachedClipping(in: &layers)
+            guard (try? LayerHierarchy.validate(layers.map(\.hierarchyRecord))) != nil else {
+                throw CompositorMCPCommandError(code: "ungroup_failed", message: "The group could not be dissolved.")
+            }
+            session.beginEdit("Ungroup Layers")
+            session.document?.layers = layers
+            if let topmost = children.last {
+                session.activeLayerID = topmost.id
+                session.selectedLayerIDs = Set(children.map(\.id))
+            } else if session.activeLayerID == id {
+                session.activeLayerID = nil
+            }
+            session.endEdit()
+            return Outcome(value: .object([
+                "ungroupedLayerId": .string(id.uuidString),
+                "childLayerIds": .array(children.map { .string($0.id.uuidString) })
+            ]), mutated: true)
         case "layer.merge":
             if let value = try arguments.optionalString("layerId") { session.selectLayer(try resolveLayer(value, session: session)) }
             guard session.canMergeLayers else { throw CompositorMCPCommandError(code: "merge_unavailable", message: "The current layer selection cannot be merged.") }
@@ -745,6 +940,27 @@ final class CompositorMCPCommandRouter {
             }
             guard transform.isValid else { session.cancelTransform(); throw CompositorMCPCommandError.invalid("The resulting transform is outside Compositor's limits.") }
             session.previewTransform(transform)
+            session.commitTransform()
+            return Outcome(value: layerValue(session.activeLayer), mutated: true)
+        case "layer.distort":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            guard session.document?.layers.contains(where: { $0.id == id }) == true else {
+                throw CompositorMCPCommandError.notFound("Layer not found.")
+            }
+            let corners = try requireDistortCorners(arguments)
+            // Settle any pending transform first so the warp starts from the committed
+            // placement, then drive the same beginDistort → previewCorners → commitTransform
+            // pipeline the canvas uses, which resamples the pixels into the new shape.
+            session.commitTransform()
+            session.selectLayer(id)
+            session.isMaskSelected = false
+            session.beginTransform(persistent: true)
+            session.beginDistort()
+            guard session.transformEdit != nil, session.transformEdit?.corners != nil else {
+                session.cancelTransform()
+                throw CompositorMCPCommandError(code: "transform_unavailable", message: "The selected layer or group cannot be distorted.")
+            }
+            session.previewCorners(corners)
             session.commitTransform()
             return Outcome(value: layerValue(session.activeLayer), mutated: true)
         case "layer.addMask":
@@ -789,6 +1005,42 @@ final class CompositorMCPCommandRouter {
                 session.toggleClippingMask(id)
             }
             return Outcome(value: .object(["layerId": .string(id.uuidString), "enabled": .bool(enabled)]), mutated: true)
+        case "layer.featherMask":
+            let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
+            let radius = try arguments.requiredDouble("radius")
+            guard let index = session.document?.layers.firstIndex(where: { $0.id == id }),
+                  let mask = session.document?.layers[index].mask else {
+                throw CompositorMCPCommandError.notFound("Layer mask not found.")
+            }
+            guard session.canEditLayers else {
+                throw CompositorMCPCommandError(code: "mask_edit_unavailable", message: "The mask cannot be edited while another edit is active.")
+            }
+            // Compositor has no native mask feather: the mask's own pixels are softened by a
+            // Gaussian blur rendered through the same Core Image mask pipeline raster edits use
+            // (`PixelAdjust.render` isMask). The radius is in mask pixels; a 1 × 1 uniform mask
+            // or a zero radius leaves the asset untouched.
+            var asset = mask.asset
+            if radius > 0, mask.asset.image.width > 1 || mask.asset.image.height > 1 {
+                let extent = CGRect(x: 0, y: 0, width: mask.asset.image.width, height: mask.asset.image.height)
+                let blurred = CIImage(cgImage: mask.asset.image)
+                    .clampedToExtent()
+                    .applyingGaussianBlur(sigma: radius)
+                    .cropped(to: extent)
+                do {
+                    let image = try PixelAdjust.render(blurred, width: mask.asset.image.width,
+                        height: mask.asset.image.height, isMask: true)
+                    asset = try LayerMask.asset(from: image)
+                } catch {
+                    throw CompositorMCPCommandError(code: "feather_failed", message: error.localizedDescription)
+                }
+            }
+            let changed = asset.image !== mask.asset.image
+            session.beginEdit("Feather Mask")
+            session.document?.layers[index].mask = mask.replacing(asset)
+            session.endEdit()
+            return Outcome(value: .object([
+                "layerId": .string(id.uuidString), "radius": .number(radius), "hasMask": .bool(true)
+            ]), mutated: changed)
         case "selection.all":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
             session.selectAll()

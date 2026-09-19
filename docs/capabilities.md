@@ -3,7 +3,7 @@
 _Generated from `packages/protocol/src/capabilities.ts` by `scripts/generate-capability-docs.mjs`._
 _Do not edit by hand — run `npm run docs:capabilities` and commit the result._
 
-62 operations: 42 implemented, 20 planned.
+62 operations: 48 implemented, 14 planned.
 `execute` rejects `planned` operations with `operation_not_implemented` until the bridge implements them.
 
 **Risk** — `read`: no mutation; `write`: mutates the document; `destructive`: requires
@@ -34,9 +34,9 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `document.save` | Save project | implemented | filesystem | no | `path`? | aliases: save as, write project; tags: file, comp |
 | `document.importImages` | Import images | implemented | filesystem | no | `paths`, `x`?, `y`? | aliases: add image, place images; tags: import, layers, file |
 | `document.export` | Export flattened image | implemented | filesystem | no | `path`, `format`?, `quality`?, `background`? | aliases: render, save png, save jpeg; tags: export, file, png, jpeg |
-| `document.resizeCanvas` | Resize canvas | planned | write | yes | `width`, `height`, `anchor`? | aliases: canvas size, expand canvas, change canvas size; tags: canvas, resize, anchor |
-| `document.resizeImage` | Resize image | planned | write | yes | `width`, `height`, `resolution`? | aliases: resample image, scale image, change image size; tags: image size, resample |
-| `document.crop` | Crop document | planned | write | yes | `x`, `y`, `width`, `height` | aliases: crop, trim canvas; tags: crop, canvas, bounds |
+| `document.resizeCanvas` | Resize canvas | implemented | write | yes | `width`, `height`, `anchor`? | aliases: canvas size, expand canvas, change canvas size; tags: canvas, resize, anchor |
+| `document.resizeImage` | Resize image | implemented | write | yes | `width`, `height`, `resolution`? | aliases: resample image, scale image, change image size; tags: image size, resample |
+| `document.crop` | Crop document | implemented | write | yes | `x`, `y`, `width`, `height` | aliases: crop, trim canvas; tags: crop, canvas, bounds |
 | `document.flip` | Flip canvas | implemented | write | yes | `axis` | – |
 
 ## history
@@ -61,11 +61,11 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `layer.setBlendMode` | Set blend mode | implemented | write | yes | `layerId`, `blendMode` | – |
 | `layer.move` | Move layer in stack | implemented | write | yes | `layerId`, `offset` | – |
 | `layer.group` | Group selected layers | implemented | write | yes | `name`? | – |
-| `layer.ungroup` | Ungroup layer folder | planned | write | yes | `layerId` | aliases: dissolve group, ungroup layers; tags: group, folder |
+| `layer.ungroup` | Ungroup layer folder | implemented | write | yes | `layerId` | aliases: dissolve group, ungroup layers; tags: group, folder |
 | `layer.merge` | Merge layers | implemented | destructive | yes | `layerId`? | – |
 | `layer.flip` | Flip layer | implemented | write | yes | `axis` | – |
 | `layer.transform` | Transform layer | implemented | write | yes | `layerId`, `x`?, `y`?, `width`?, `height`?, `rotation`?, `flipX`?, `flipY`?, `sampling`? | tags: move, scale, rotate |
-| `layer.distort` | Free distort layer | planned | write | yes | `layerId`, `corners` | aliases: free distort, perspective transform, warp corners; tags: transform, distort, perspective |
+| `layer.distort` | Free distort layer | implemented | write | yes | `layerId`, `corners` | aliases: free distort, perspective transform, warp corners; tags: transform, distort, perspective |
 
 ## mask
 
@@ -75,7 +75,7 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `layer.deleteMask` | Delete layer mask | implemented | destructive | yes | `layerId` | – |
 | `layer.setMaskLinked` | Link or unlink mask | implemented | write | yes | `layerId`, `linked` | – |
 | `layer.setClippingMask` | Set clipping mask | implemented | write | yes | `layerId`, `enabled` | – |
-| `layer.featherMask` | Feather layer mask | planned | write | yes | `layerId`, `radius` | aliases: soften mask, feather mask edge, blur mask; tags: feather, mask |
+| `layer.featherMask` | Feather layer mask | implemented | write | yes | `layerId`, `radius` | aliases: soften mask, feather mask edge, blur mask; tags: feather, mask |
 
 ## selection
 

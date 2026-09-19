@@ -39,7 +39,7 @@ test("all catalogue examples satisfy their advertised schemas", async () => {
 
 test("every planned capability carries a full contract", () => {
   const planned = CAPABILITIES.filter((entry) => entry.status === "planned");
-  assert.equal(planned.length, 20);
+  assert.equal(planned.length, 14);
   for (const capability of planned) {
     assert.ok(capability.inputSchema.type === "object" || capability.inputSchema.oneOf, `${capability.name} has no object schema`);
     assert.ok(capability.examples.length > 0, `${capability.name} has no examples`);

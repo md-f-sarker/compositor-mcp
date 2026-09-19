@@ -4,8 +4,8 @@ The goal is to expose every meaningful Compositor action through stable, typed M
 
 ## Current totals
 
-- Implemented: 42
-- Planned and schema-catalogued: 20
+- Implemented: 48
+- Planned and schema-catalogued: 14
 - Total: 62
 
 The executable source of truth is [`packages/protocol/src/capabilities.ts`](../packages/protocol/src/capabilities.ts). `search` hides planned operations unless `includePlanned` is true, and `execute` rejects them.
@@ -15,10 +15,10 @@ The executable source of truth is [`packages/protocol/src/capabilities.ts`](../p
 | Area | Operations |
 |---|---|
 | App/workspace | Ping, inspect state, list/select open projects |
-| Documents | Create, open, save, import images, PNG/JPEG export, flip canvas |
+| Documents | Create, open, save, import images, PNG/JPEG export, flip canvas, canvas size, image size, crop |
 | History | Undo, redo |
-| Layers | List/select, blank, duplicate, rename, delete, visibility, opacity, blend mode, move, group, merge, flip, transform |
-| Masks | Add/delete, link/unlink, clipping masks |
+| Layers | List/select, blank, duplicate, rename, delete, visibility, opacity, blend mode, move, group, ungroup, merge, flip, transform, free distort |
+| Masks | Add/delete, link/unlink, clipping masks, feather |
 | Selection | Inspect, all/none/invert, from layer/mask, expand/contract |
 | Pixels | Fill, clear, invert |
 | Preview | Full-resolution temporary PNG |
@@ -27,9 +27,6 @@ The executable source of truth is [`packages/protocol/src/capabilities.ts`](../p
 
 | Area | Operations |
 |---|---|
-| Geometry | Canvas size, image size, crop, free distort |
-| Layer structure | Ungroup |
-| Masks | Feather |
 | Selection tools | Rectangle, ellipse, polygonal lasso, magic wand |
 | Intelligent fill | Content-aware fill |
 | Painting/retouching | Brush, spot heal, clone, blur/liquify, gradient, shape |
