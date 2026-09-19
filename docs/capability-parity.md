@@ -4,8 +4,8 @@ The goal is to expose every meaningful Compositor action through stable, typed M
 
 ## Current totals
 
-- Implemented: 52
-- Planned and schema-catalogued: 10
+- Implemented: 58
+- Planned and schema-catalogued: 4
 - Total: 62
 
 The executable source of truth is [`packages/protocol/src/capabilities.ts`](../packages/protocol/src/capabilities.ts). `search` hides planned operations unless `includePlanned` is true, and `execute` rejects them.
@@ -21,6 +21,7 @@ The executable source of truth is [`packages/protocol/src/capabilities.ts`](../p
 | Masks | Add/delete, link/unlink, clipping masks, feather |
 | Selection | Inspect, all/none/invert, from layer/mask, rectangle, ellipse, polygonal lasso, magic wand, expand/contract |
 | Pixels | Fill, clear, invert |
+| Painting/retouching | Brush/erase, spot heal, clone stamp, blur/smudge/liquify, gradient, shape layers |
 | Preview | Full-resolution temporary PNG |
 
 ## Planned groups
@@ -28,7 +29,6 @@ The executable source of truth is [`packages/protocol/src/capabilities.ts`](../p
 | Area | Operations |
 |---|---|
 | Intelligent fill | Content-aware fill |
-| Painting/retouching | Brush, spot heal, clone, blur/liquify, gradient, shape |
 | Adjustments | Add/update adjustment layers |
 | Filters | Apply supported filters and colour adjustments |
 

@@ -17,11 +17,11 @@ test("search understands natural language aliases", () => {
 });
 
 test("planned capabilities are hidden by default", () => {
-  const defaultResults = searchCapabilities("brush stroke", { limit: 50 });
-  assert.equal(defaultResults.some((hit) => hit.capability.name === "paint.brushStroke"), false);
+  const defaultResults = searchCapabilities("content aware fill", { limit: 50 });
+  assert.equal(defaultResults.some((hit) => hit.capability.name === "pixels.contentAwareFill"), false);
 
-  const allResults = searchCapabilities("brush stroke", { limit: 50, includePlanned: true });
-  assert.equal(allResults.some((hit) => hit.capability.name === "paint.brushStroke"), true);
+  const allResults = searchCapabilities("content aware fill", { limit: 50, includePlanned: true });
+  assert.equal(allResults.some((hit) => hit.capability.name === "pixels.contentAwareFill"), true);
 });
 
 test("all catalogue examples satisfy their advertised schemas", async () => {
@@ -39,7 +39,7 @@ test("all catalogue examples satisfy their advertised schemas", async () => {
 
 test("every planned capability carries a full contract", () => {
   const planned = CAPABILITIES.filter((entry) => entry.status === "planned");
-  assert.equal(planned.length, 10);
+  assert.equal(planned.length, 4);
   for (const capability of planned) {
     assert.ok(capability.inputSchema.type === "object" || capability.inputSchema.oneOf, `${capability.name} has no object schema`);
     assert.ok(capability.examples.length > 0, `${capability.name} has no examples`);
