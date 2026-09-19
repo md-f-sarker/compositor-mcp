@@ -868,7 +868,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Content-aware fill",
     description: "Fill the current selection using surrounding image content, including past layer edges.",
     category: "pixels",
-    status: "planned",
     risk: "write",
     aliases: ["content aware fill", "fill selection", "generative fill"],
     tags: ["fill", "retouch"],
@@ -1097,7 +1096,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Add adjustment layer",
     description: "Add Levels, Curves, Hue/Saturation, Exposure, Gradient Map or Grain adjustment layer.",
     category: "adjustment",
-    status: "planned",
     aliases: ["new adjustment", "adjustment layer"],
     tags: ["non-destructive", "colour", "levels", "curves"],
     inputSchema: {
@@ -1124,7 +1122,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Update adjustment layer",
     description: "Update an adjustment layer with typed parameters.",
     category: "adjustment",
-    status: "planned",
     aliases: ["edit adjustment", "change adjustment"],
     tags: ["non-destructive", "colour"],
     inputSchema: {
@@ -1149,7 +1146,6 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Apply image filter",
     description: "Apply Gaussian Blur, Motion Blur, Add Noise, Lens Correction, Remove Background or supported colour adjustment.",
     category: "filter",
-    status: "planned",
     aliases: ["apply filter", "gaussian blur", "remove background"],
     tags: ["filter", "blur", "noise", "background"],
     inputSchema: {

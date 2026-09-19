@@ -3,7 +3,7 @@
 _Generated from `packages/protocol/src/capabilities.ts` by `scripts/generate-capability-docs.mjs`._
 _Do not edit by hand — run `npm run docs:capabilities` and commit the result._
 
-62 operations: 58 implemented, 4 planned.
+62 operations: 62 implemented, 0 planned.
 `execute` rejects `planned` operations with `operation_not_implemented` until the bridge implements them.
 
 **Risk** — `read`: no mutation; `write`: mutates the document; `destructive`: requires
@@ -101,7 +101,7 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `pixels.fill` | Fill pixels | implemented | write | yes | `target`? | – |
 | `pixels.clear` | Clear pixels | implemented | destructive | yes | – | – |
 | `pixels.invert` | Invert pixels or mask | implemented | write | yes | – | – |
-| `pixels.contentAwareFill` | Content-aware fill | planned | write | yes | – | aliases: content aware fill, fill selection, generative fill; tags: fill, retouch |
+| `pixels.contentAwareFill` | Content-aware fill | implemented | write | yes | – | aliases: content aware fill, fill selection, generative fill; tags: fill, retouch |
 
 ## paint
 
@@ -118,14 +118,14 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 
 | Operation | Title | Status | Risk | Txn | Parameters | Aliases & tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| `adjustment.add` | Add adjustment layer | planned | write | yes | `kind`, `name`?, `parameters`? | aliases: new adjustment, adjustment layer; tags: non-destructive, colour, levels, curves |
-| `adjustment.update` | Update adjustment layer | planned | write | yes | `layerId`, `kind`, `parameters` | aliases: edit adjustment, change adjustment; tags: non-destructive, colour |
+| `adjustment.add` | Add adjustment layer | implemented | write | yes | `kind`, `name`?, `parameters`? | aliases: new adjustment, adjustment layer; tags: non-destructive, colour, levels, curves |
+| `adjustment.update` | Update adjustment layer | implemented | write | yes | `layerId`, `kind`, `parameters` | aliases: edit adjustment, change adjustment; tags: non-destructive, colour |
 
 ## filter
 
 | Operation | Title | Status | Risk | Txn | Parameters | Aliases & tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| `filter.apply` | Apply image filter | planned | write | yes | `kind`, `settings`? | aliases: apply filter, gaussian blur, remove background; tags: filter, blur, noise, background |
+| `filter.apply` | Apply image filter | implemented | write | yes | `kind`, `settings`? | aliases: apply filter, gaussian blur, remove background; tags: filter, blur, noise, background |
 
 ## preview
 

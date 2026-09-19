@@ -29,8 +29,9 @@ final class CompositorMCPCommandRouter {
         "layer.setClippingMask", "layer.featherMask",
         "selection.get", "selection.all", "selection.none", "selection.invert", "selection.fromLayer", "selection.fromMask",
         "selection.rectangle", "selection.ellipse", "selection.polygon", "selection.magicWand",
-        "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "preview.render",
-        "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape"
+        "selection.expand", "selection.contract", "pixels.fill", "pixels.clear", "pixels.invert", "pixels.contentAwareFill", "preview.render",
+        "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape",
+        "adjustment.add", "adjustment.update", "filter.apply"
     ]
 
     private let destructive: Set<String> = ["layer.delete", "layer.merge", "layer.deleteMask", "pixels.clear"]
@@ -533,13 +534,16 @@ final class CompositorMCPCommandRouter {
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
         case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
             try validatePaint(operation.name, arguments: arguments, session: session)
+        case "adjustment.add", "adjustment.update", "filter.apply", "pixels.contentAwareFill":
+            try validateFilterAndAdjustment(operation.name, arguments: arguments, session: session)
         default:
             throw CompositorMCPCommandError(code: "operation_not_implemented", message: "\(operation.name) is not implemented.")
         }
     }
 
+    /// Internal rather than private so CompositorMCPFilters.swift can resolve targets.
     @discardableResult
-    private func requireLayer(_ id: UUID, session: EditorSession) throws -> ImageLayer {
+    func requireLayer(_ id: UUID, session: EditorSession) throws -> ImageLayer {
         guard let layer = session.document?.layers.first(where: { $0.id == id }) else {
             throw CompositorMCPCommandError.notFound("Layer not found: \(id.uuidString)")
         }
@@ -1230,6 +1234,8 @@ final class CompositorMCPCommandRouter {
             return Outcome(value: .object(["inverted": .bool(true)]), mutated: true)
         case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
             return try await applyPaint(operation.name, arguments: arguments, session: session)
+        case "adjustment.add", "adjustment.update", "filter.apply", "pixels.contentAwareFill":
+            return try await applyFilterAndAdjustment(operation.name, arguments: arguments, session: session)
         case "preview.render":
             guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Compositor-MCP", isDirectory: true)
@@ -1277,7 +1283,8 @@ final class CompositorMCPCommandRouter {
         return id
     }
 
-    private func resolveLayer(_ value: String, session: EditorSession) throws -> UUID {
+    /// Internal rather than private so CompositorMCPFilters.swift can resolve targets.
+    func resolveLayer(_ value: String, session: EditorSession) throws -> UUID {
         if value == "active" {
             guard let id = session.activeLayerID else { throw CompositorMCPCommandError(code: "layer_required", message: "No active layer exists.") }
             return id

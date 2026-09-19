@@ -17,10 +17,10 @@ test("destructive operations require explicit confirmation", () => {
   );
 });
 
-test("planned operations are rejected", () => {
+test("unknown operations are rejected", () => {
   assert.throws(
-    () => validateExecuteRequest({ operations: [{ name: "pixels.contentAwareFill", arguments: {} }], dryRun: true }),
-    /not implemented/i,
+    () => validateExecuteRequest({ operations: [{ name: "pixels.teleport", arguments: {} }], dryRun: true }),
+    /unknown operation/i,
   );
 });
 
@@ -74,7 +74,18 @@ interface MockState {
     width: number;
     height: number;
     resolution: number;
-    layers: Array<{ id: string; parentId: string | null; group: boolean; mask: boolean; fill: MockBounds | null; transform: { x: number; y: number; width: number; height: number } }>;
+    layers: Array<{
+      id: string;
+      name: string;
+      parentId: string | null;
+      group: boolean;
+      mask: boolean;
+      fill: MockBounds | null;
+      adjustment: boolean;
+      adjustmentKind: string | null;
+      adjustmentParameters: Record<string, unknown> | null;
+      transform: { x: number; y: number; width: number; height: number };
+    }>;
     selectedLayerIds: string[];
     selection: MockBounds | null;
   } | null;
@@ -680,4 +691,148 @@ test("selection tools require an open document", async () => {
     assert.equal(result.ok, false, name);
     assert.equal(result.results[0]?.error?.code, "document_required", name);
   }
+});
+
+test("adjustment.add creates an adjustment layer that adjustment.update can edit", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge, "Base");
+  const added = await execute(bridge, {
+    operations: [{ name: "adjustment.add", arguments: { kind: "Hue/Saturation" } }],
+  });
+  assert.equal(added.ok, true);
+  const layer = added.results[0]?.value as { id: string; name: string; adjustment: boolean; adjustmentKind: string | null };
+  assert.equal(layer.adjustment, true);
+  assert.equal(layer.adjustmentKind, "Hue/Saturation");
+  assert.equal(layer.name, "Hue/Saturation");
+  // layer.list reports the new layer's adjustment metadata.
+  const listed = added.state.current?.layers.find((candidate) => candidate.id === layer.id);
+  assert.equal(listed?.adjustment, true);
+  assert.equal(listed?.adjustmentKind, "Hue/Saturation");
+  assert.deepEqual(added.state.current?.selectedLayerIds, [layer.id]);
+
+  const updated = await execute(bridge, {
+    operations: [
+      { name: "adjustment.update", arguments: { layerId: layer.id, kind: "Hue/Saturation", parameters: { saturation: -40 } } },
+    ],
+  });
+  assert.equal(updated.ok, true);
+  const stored = updated.state.current?.layers.find((candidate) => candidate.id === layer.id);
+  assert.equal(stored?.adjustmentParameters?.["saturation"], -40);
+});
+
+test("adjustment.update rejects non-adjustment layers and kind mismatches", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const notAdjustment = await execute(bridge, {
+    operations: [{ name: "adjustment.update", arguments: { layerId: "active", kind: "Grain", parameters: { amount: 10 } } }],
+  });
+  assert.equal(notAdjustment.ok, false);
+  assert.equal(notAdjustment.results[0]?.error?.code, "invalid_arguments");
+
+  await execute(bridge, { operations: [{ name: "adjustment.add", arguments: { kind: "Grain" } }] });
+  const mismatch = await execute(bridge, {
+    operations: [{ name: "adjustment.update", arguments: { layerId: "active", kind: "Curves", parameters: {} } }],
+  });
+  assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.results[0]?.error?.code, "invalid_arguments");
+});
+
+test("adjustment schemas reject unknown kinds and wrong parameter shapes", () => {
+  assert.throws(
+    () => validateExecuteRequest({ operations: [{ name: "adjustment.add", arguments: { kind: "Imaginary" } }] }),
+    /exactly one schema/i,
+  );
+  assert.throws(
+    () =>
+      validateExecuteRequest({
+        operations: [{ name: "adjustment.add", arguments: { kind: "Hue/Saturation", parameters: { radius: 4 } } }],
+      }),
+    /exactly one schema/i,
+  );
+});
+
+test("filter.apply Gaussian Blur grows the layer by the blur margin", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const layerId = await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    operations: [{ name: "filter.apply", arguments: { kind: "Gaussian Blur", settings: { radius: 4 } } }],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[0]?.value as { applied: boolean; kind: string; layerId: string };
+  assert.equal(outcome.applied, true);
+  assert.equal(outcome.kind, "Gaussian Blur");
+  assert.equal(outcome.layerId, layerId);
+  // FilterEdit.blurMargin for a radius-4 Gaussian is ceil(4 * 3 + 2) = 14 px each side.
+  const layer = result.state.current?.layers.find((candidate) => candidate.id === layerId);
+  assert.deepEqual(
+    { x: layer?.transform.x, y: layer?.transform.y, width: layer?.transform.width, height: layer?.transform.height },
+    { x: -14, y: -14, width: 1228, height: 828 },
+  );
+});
+
+test("filter.apply rejects a group layer and an unknown kind", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const first = await addPaintableLayer(bridge, "A");
+  const second = await addPaintableLayer(bridge, "B");
+  await execute(bridge, {
+    operations: [
+      { name: "layer.select", arguments: { layerIds: [first, second] } },
+      { name: "layer.group", arguments: {} },
+    ],
+  });
+  const onGroup = await execute(bridge, {
+    operations: [{ name: "filter.apply", arguments: { kind: "Gaussian Blur", settings: { radius: 4 } } }],
+  });
+  assert.equal(onGroup.ok, false);
+  assert.equal(onGroup.results[0]?.error?.code, "invalid_arguments");
+  assert.throws(
+    () => validateExecuteRequest({ operations: [{ name: "filter.apply", arguments: { kind: "Imaginary" } }] }),
+    /exactly one schema/i,
+  );
+});
+
+test("filter.apply Remove Background produces a masked layer", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const layerId = await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    operations: [{ name: "filter.apply", arguments: { kind: "Remove Background", settings: { backgroundQuality: "Advanced" } } }],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[0]?.value as { applied: boolean; mask: boolean };
+  assert.equal(outcome.applied, true);
+  assert.equal(outcome.mask, true);
+  assert.equal(result.state.current?.layers.find((candidate) => candidate.id === layerId)?.mask, true);
+});
+
+test("pixels.contentAwareFill fills inside a selection and requires one", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await addPaintableLayer(bridge);
+  const noSelection = await execute(bridge, { operations: [{ name: "pixels.contentAwareFill", arguments: {} }] });
+  assert.equal(noSelection.ok, false);
+  assert.equal(noSelection.results[0]?.error?.code, "selection_required");
+
+  const filled = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "selection.rectangle", arguments: { x: 100, y: 100, width: 50, height: 40 } },
+      { name: "pixels.contentAwareFill", arguments: {} },
+    ],
+  });
+  assert.equal(filled.ok, true);
+  const outcome = filled.results[1]?.value as { applied: boolean; kind: string };
+  assert.equal(outcome.applied, true);
+  assert.equal(outcome.kind, "Content-Aware Fill");
+  assert.deepEqual(filled.state.current?.layers.at(-1)?.fill, { x: 100, y: 100, width: 50, height: 40 });
+
+  // The same pipeline is reachable through filter.apply's Content-Aware Fill kind.
+  const viaFilter = await execute(bridge, {
+    operations: [{ name: "filter.apply", arguments: { kind: "Content-Aware Fill" } }],
+  });
+  assert.equal(viaFilter.ok, true);
 });
