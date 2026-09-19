@@ -2,6 +2,45 @@
 
 The MCP-facing API is handled by the TypeScript SDK. This document describes the private protocol between the Node server and the native Compositor app.
 
+## MCP surface
+
+The server exposes exactly two tools — `search` and `execute` — plus resources and prompts. Everything below rides standard MCP; clients that never read resources or prompts lose nothing.
+
+### Tools
+
+| Tool | Purpose | Annotations |
+| --- | --- | --- |
+| `search` | Query the capability catalogue (names, risk, status, JSON schemas). | `readOnlyHint: true`, `idempotentHint: true` |
+| `execute` | Run one or more typed operations with dry-run, atomic batches, preconditions, idempotency keys and destructive confirmation. | `destructiveHint: true`, `idempotentHint: false` (batches can mutate) |
+
+Both tools declare an `outputSchema` and return `structuredContent` alongside the pretty-printed JSON `text` block, so older clients keep working unchanged:
+
+- `search` → `{ query, count, results: [{ score, capability }], hint }`
+- `execute` → the bridge envelope: `{ ok, results: [{ index, name, ok, value?, error? }], dryRun?, atomic?, rolledBack?, mutated?, revision?, state? }`
+
+`execute` errors return `isError: true` with a text payload `{ ok: false, error: { code, message, details?, retryable? } }`.
+
+### Resources
+
+| URI | Content | Notes |
+| --- | --- | --- |
+| `compositor://state` | `application/json` | The same snapshot `app.getState` returns: projects, current document, layers, selection, revision. |
+| `compositor://layers` | `application/json` | The current document's layer tree flattened out of the state snapshot. |
+| `compositor://capabilities` | `application/json` | The full operation catalogue the connected build implements. |
+| `compositor://preview/latest` | `image/png` blob | Bytes of the most recent successful `preview.render` this server session ran. Until the first render it answers with `text/plain` guidance instead. |
+
+Resource reads that need the app (`state`, `layers`, `capabilities`) fail with a protocol error whose `data` carries the bridge error shape — `{ code: "bridge_not_running", retryable: true, ... }` when Compositor is not running.
+
+### Prompts
+
+Four workflow recipes render step-by-step guidance that names only implemented operations: `export-for-web` (resize → export PNG + JPEG), `subject-cutout` (remove background → new layer → refine mask), `retouch-pass` (selection → spot heal / clone / content-aware fill), and `batch-variant` (duplicate → adjust → export). Each accepts optional string arguments to tailor the recipe.
+
+### Inline previews and destructive confirmation
+
+When `preview.render` succeeds, the server reads the PNG the app wrote under `<tmp>/Compositor-MCP/` (owner-only, loopback-only deployment — other paths are refused), caches the bytes for `compositor://preview/latest`, and inlines an `image/png` content block in the execute result when the file is ≤ 1 MiB. Larger renders keep the path-only result.
+
+Destructive operations require `confirmDestructive: true` — the portable contract every client supports. When the client advertises elicitation, `execute` instead asks once via `elicitation/create` (form mode, `confirm` boolean): accepting runs the batch, declining or cancelling fails it with `confirmation_declined`. Clients without elicitation keep the `confirmation_required` tool error unchanged. Elicitation is a UX affordance, not an authorization boundary — the client can always set the flag itself.
+
 ## Discovery
 
 Path:
