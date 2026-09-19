@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
   BridgeRequest,
   ExecuteRequest,
@@ -10,6 +13,14 @@ import type {
 import { CAPABILITIES } from "@compositor-mcp/protocol";
 import { CompositorMcpError } from "./errors.js";
 import type { BridgeTransport } from "./bridge-client.js";
+
+/// A real 1×1 opaque PNG. The mock writes it to the same temp-directory
+/// convention the bridge uses so the inline-image path and
+/// compositor://preview/latest are exercised end to end.
+const MOCK_PREVIEW_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 interface MockLayer {
   id: string;
@@ -55,6 +66,11 @@ interface MockDocument {
 export class MockBridgeTransport implements BridgeTransport {
   private revision = 0;
   private document: MockDocument | null = null;
+  private previewImage: Buffer;
+
+  constructor(options: { previewImage?: Buffer } = {}) {
+    this.previewImage = options.previewImage ?? MOCK_PREVIEW_PNG;
+  }
 
   async request(method: BridgeRequest["method"], params?: JsonObject): Promise<JsonValue> {
     switch (method) {
@@ -89,7 +105,7 @@ export class MockBridgeTransport implements BridgeTransport {
     } as unknown as JsonValue;
   }
 
-  private execute(request: ExecuteRequest): JsonValue {
+  private async execute(request: ExecuteRequest): Promise<JsonValue> {
     const operations = request.operations ?? [];
     if (!Array.isArray(operations) || operations.length === 0) {
       throw new CompositorMcpError("invalid_request", "At least one operation is required.");
@@ -114,7 +130,7 @@ export class MockBridgeTransport implements BridgeTransport {
       const operation = operations[index];
       if (!operation) continue;
       try {
-        const value = this.apply(operation);
+        const value = await this.apply(operation);
         results.push({ index, name: operation.name, ok: true, value });
       } catch (error) {
         const normalised = error instanceof CompositorMcpError ? error.toJSON() : { code: "mock_error", message: String(error) };
@@ -142,7 +158,7 @@ export class MockBridgeTransport implements BridgeTransport {
     } as unknown as JsonValue;
   }
 
-  private apply(operation: Operation): JsonValue {
+  private async apply(operation: Operation): Promise<JsonValue> {
     const args = operation.arguments ?? {};
     switch (operation.name) {
       case "app.ping":
@@ -772,6 +788,16 @@ export class MockBridgeTransport implements BridgeTransport {
         layer.fill = { ...selection };
         this.revision += 1;
         return { applied: true, kind: "Content-Aware Fill", layerId: layer.id, mask: layer.mask };
+      }
+      case "preview.render": {
+        const document = this.requireDocument();
+        // Same convention the bridge uses: a full-resolution PNG under
+        // <tmp>/Compositor-MCP/preview-<uuid>.png, returning path + dimensions.
+        const directory = path.join(os.tmpdir(), "Compositor-MCP");
+        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+        const destination = path.join(directory, `preview-${randomUUID()}.png`);
+        await fs.writeFile(destination, this.previewImage, { mode: 0o600 });
+        return { path: destination, width: document.width, height: document.height };
       }
       case "history.undo":
       case "history.redo":
