@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Upstream Compositor revision the bridge patch and Swift sources were audited
+# against (see README.md / NOTICE.md). Drift warns but does not fail: the patch
+# anchors are string-based and may still apply cleanly on newer commits.
+AUDITED_UPSTREAM_SHA="a19db9011282399785dc18efcfded904627bdcc2"
+
 ROOT="${1:-}"
 if [[ -z "$ROOT" ]]; then
   echo "Usage: $0 /absolute/path/to/Compositor" >&2
@@ -14,6 +19,22 @@ DEST_DIR="$ROOT/Compositor/MCP"
 [[ -d "$ROOT/Compositor.xcodeproj" ]] || { echo "Not a Compositor checkout: $ROOT" >&2; exit 66; }
 [[ -f "$APP_DELEGATE" ]] || { echo "Missing $APP_DELEGATE" >&2; exit 66; }
 [[ -f "$SOURCE_DIR/CompositorMCPBridge.swift" ]] || { echo "MCP Swift sources are missing." >&2; exit 66; }
+
+UPSTREAM_HEAD=""
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  UPSTREAM_HEAD="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+
+if [[ -n "$UPSTREAM_HEAD" && "$UPSTREAM_HEAD" == "$AUDITED_UPSTREAM_SHA" ]]; then
+  echo "Upstream revision verified: HEAD matches audited commit $AUDITED_UPSTREAM_SHA"
+elif [[ -n "$UPSTREAM_HEAD" ]]; then
+  echo "WARNING: upstream drift detected — proceeding anyway." >&2
+  echo "  upstream HEAD:    $UPSTREAM_HEAD" >&2
+  echo "  audited commit:   $AUDITED_UPSTREAM_SHA" >&2
+  echo "  The bridge patch applies by string anchors and may need review." >&2
+else
+  echo "NOTE: $ROOT is not a git checkout; cannot compare against audited commit $AUDITED_UPSTREAM_SHA." >&2
+fi
 
 mkdir -p "$DEST_DIR"
 cp "$SOURCE_DIR"/*.swift "$DEST_DIR"/
@@ -64,4 +85,7 @@ else:
 PY
 
 echo "Installed Compositor MCP bridge sources into $DEST_DIR"
+echo "Install report:"
+echo "  audited upstream commit: $AUDITED_UPSTREAM_SHA"
+echo "  upstream HEAD:           ${UPSTREAM_HEAD:-unknown (not a git checkout)}"
 echo "Open Compositor.xcodeproj and build the Compositor scheme."

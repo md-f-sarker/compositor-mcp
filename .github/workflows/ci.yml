@@ -53,3 +53,21 @@ jobs:
       - run: test -f /tmp/Compositor/Compositor/MCP/CompositorMCPBridge.swift
       - run: grep -q 'bridge.start()' /tmp/Compositor/Compositor/IO/CompositorApplicationDelegate.swift
       - run: ./scripts/uninstall-from-compositor.sh /tmp/Compositor
+
+  pack-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack -w compositor-mcp --pack-destination /tmp
+      - name: Install the tarball into a scratch project
+        run: |
+          mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
+          npm init -y >/dev/null
+          npm install /tmp/compositor-mcp-*.tgz
+      - name: The packed CLI runs
+        run: /tmp/pack-smoke/node_modules/.bin/compositor-mcp --help

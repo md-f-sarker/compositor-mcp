@@ -7,18 +7,19 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @compositor-mcp/protocol && npm run build -w @compositor-mcp/server",
+    "build": "npm run build -w @compositor-mcp/protocol && npm run build -w compositor-mcp",
     "build:protocol": "npm run build -w @compositor-mcp/protocol",
     "clean": "npm run clean -ws --if-present",
-    "dev": "npm run dev -w @compositor-mcp/server",
+    "dev": "npm run dev -w compositor-mcp",
     "test": "npm run build:protocol && npm run test:packages",
-    "test:packages": "npm run test -w @compositor-mcp/protocol && npm run test -w @compositor-mcp/server",
+    "test:packages": "npm run test -w @compositor-mcp/protocol && npm run test -w compositor-mcp",
     "typecheck": "npm run build:protocol && npm run typecheck:packages",
-    "typecheck:packages": "npm run typecheck -w @compositor-mcp/protocol && npm run typecheck -w @compositor-mcp/server",
+    "typecheck:packages": "npm run typecheck -w @compositor-mcp/protocol && npm run typecheck -w compositor-mcp",
     "check": "npm run build:protocol && npm run typecheck:packages && npm run test:packages && npm run parity && npm run docs:check",
     "parity": "node scripts/check-capability-parity.mjs",
     "docs:capabilities": "node scripts/generate-capability-docs.mjs",
-    "docs:check": "node scripts/generate-capability-docs.mjs --check"
+    "docs:check": "node scripts/generate-capability-docs.mjs --check",
+    "pack": "npm pack -w compositor-mcp"
   },
   "engines": {
     "node": ">=20.12"

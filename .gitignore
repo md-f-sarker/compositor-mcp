@@ -2,6 +2,14 @@
 node_modules/
 dist/
 coverage/
+*.tgz
+
+# Generated into packages/mcp-server by scripts/sync-package-assets.mjs at pack time
+packages/mcp-server/assets/
+packages/mcp-server/README.md
+packages/mcp-server/LICENSE
+packages/mcp-server/NOTICE.md
+packages/mcp-server/CHANGELOG.md
 *.log
 .env
 .env.*
