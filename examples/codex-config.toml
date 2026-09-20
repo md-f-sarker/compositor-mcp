@@ -1,3 +1,10 @@
+# Published package (recommended): `npx` resolves and caches it per launch.
+# For a globally installed package, use command = "compositor-mcp" with no args.
 [mcp_servers.compositor]
-command = "node"
-args = ["/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"]
+command = "npx"
+args = ["-y", "compositor-mcp"]
+
+# Development checkout: run the built entry point straight from the repo.
+# [mcp_servers.compositor-dev]
+# command = "node"
+# args = ["/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"]
