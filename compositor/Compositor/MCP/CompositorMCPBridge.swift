@@ -8,12 +8,21 @@ import Network
 @MainActor
 final class CompositorMCPBridge {
     private static let maximumRequestBytes = 8 * 1024 * 1024
+    /// Far above any legitimate request shape; guards the recursive JSON decoder.
+    private static let maximumJSONDepth = 256
 
     private let workspace: ProjectWorkspace
     private let router: CompositorMCPCommandRouter
     private let queue = DispatchQueue(label: "com.compositor.mcp.bridge", qos: .userInitiated)
     private var listener: NWListener?
     private var token: String?
+
+    /// Requests are handled strictly one at a time in arrival order. Operations await
+    /// inside `router.handle`, so without serialization two connections' requests would
+    /// interleave on the main actor and corrupt shared undo groups, idempotency
+    /// bookkeeping, and optimistic preconditions.
+    private var pendingRequests: [(data: Data, token: String, connection: NWConnection)] = []
+    private var isProcessingRequest = false
 
     init(workspace: ProjectWorkspace) {
         self.workspace = workspace
@@ -29,6 +38,9 @@ final class CompositorMCPBridge {
             let token = try CompositorMCPRuntimeFiles.randomToken()
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            // Kernel-enforced loopback binding; the per-connection endpoint check in
+            // accept() stays as defence-in-depth.
+            parameters.requiredInterfaceType = .loopback
             let listener = try NWListener(using: parameters, on: .any)
             self.token = token
             self.listener = listener
@@ -52,6 +64,10 @@ final class CompositorMCPBridge {
     func stop() {
         listener?.cancel()
         listener = nil
+        // Drop requests still waiting for the serial queue so they never reach
+        // router.handle during shutdown; the in-flight request is allowed to finish.
+        for pending in pendingRequests { pending.connection.cancel() }
+        pendingRequests.removeAll()
         if let token { CompositorMCPRuntimeFiles.removeDiscovery(matching: token) }
         token = nil
     }
@@ -90,6 +106,11 @@ final class CompositorMCPBridge {
     }
 
     private func accept(_ connection: NWConnection, token: String) {
+        // A connection accepted just as stop() runs must not reach the router.
+        guard listener != nil else {
+            connection.cancel()
+            return
+        }
         guard isLoopback(connection.endpoint) else {
             connection.cancel()
             return
@@ -103,22 +124,22 @@ final class CompositorMCPBridge {
             Task { @MainActor in
                 guard let self else { connection.cancel(); return }
                 if let error {
-                    self.sendFailure(id: "unknown", code: "bridge_receive_failed", message: error.localizedDescription, on: connection)
+                    await self.reject(id: "unknown", code: "bridge_receive_failed", message: error.localizedDescription, on: connection)
                     return
                 }
 
                 var next = buffer
                 if let data { next.append(data) }
                 if next.count > Self.maximumRequestBytes {
-                    self.sendFailure(id: "unknown", code: "request_too_large", message: "Bridge requests are limited to 8 MiB.", on: connection)
+                    await self.reject(id: "unknown", code: "request_too_large", message: "Bridge requests are limited to 8 MiB.", on: connection)
                     return
                 }
 
                 if let newline = next.firstIndex(of: 0x0A) {
                     let payload = next[..<newline]
-                    await self.process(Data(payload), expectedToken: token, on: connection)
+                    self.process(Data(payload), expectedToken: token, on: connection)
                 } else if complete {
-                    self.sendFailure(id: "unknown", code: "incomplete_request", message: "Request must end with a newline.", on: connection)
+                    await self.reject(id: "unknown", code: "incomplete_request", message: "Request must end with a newline.", on: connection)
                 } else {
                     self.receive(on: connection, buffer: next, token: token)
                 }
@@ -126,35 +147,105 @@ final class CompositorMCPBridge {
         }
     }
 
-    private func process(_ data: Data, expectedToken: String, on connection: NWConnection) async {
+    /// Enqueues the request and starts the serial drain if it is not already running.
+    private func process(_ data: Data, expectedToken: String, on connection: NWConnection) {
+        pendingRequests.append((data, expectedToken, connection))
+        guard !isProcessingRequest else { return }
+        isProcessingRequest = true
+        Task { @MainActor in
+            while !self.pendingRequests.isEmpty {
+                let next = self.pendingRequests.removeFirst()
+                await self.handle(next.data, expectedToken: next.token, on: next.connection)
+            }
+            self.isProcessingRequest = false
+        }
+    }
+
+    private func handle(_ data: Data, expectedToken: String, on connection: NWConnection) async {
+        // Bound nesting depth before decoding: CompositorMCPJSON decodes recursively,
+        // so an unbounded-depth payload could overflow the stack before auth runs.
+        guard !Self.jsonDepthExceeds(data, limit: Self.maximumJSONDepth) else {
+            await reject(id: "unknown", code: "invalid_json", message: "Request JSON exceeds the maximum nesting depth.", on: connection)
+            return
+        }
+
         let request: CompositorMCPBridgeRequest
         do {
             request = try JSONDecoder().decode(CompositorMCPBridgeRequest.self, from: data)
         } catch {
-            sendFailure(id: "unknown", code: "invalid_json", message: "Request is not valid compositor-bridge JSON.", on: connection)
+            await reject(id: "unknown", code: "invalid_json", message: "Request is not valid compositor-bridge JSON.", on: connection)
             return
         }
 
         guard constantTimeEquals(request.token, expectedToken) else {
-            sendFailure(id: request.id, code: "unauthorised", message: "Bridge authentication failed.", on: connection)
+            await reject(id: request.id, method: request.method, code: "unauthorised", message: "Bridge authentication failed.", on: connection)
             return
         }
         let response = await router.handle(request)
-        send(response, on: connection)
+        if !response.ok {
+            // Router-level rejections (confirmation_required, filesystem_denied, …)
+            // never reach apply(), so record them here or they are invisible.
+            await CompositorMCPAuditLog.shared.reject(requestId: request.id, method: request.method, code: response.error?.code ?? "unknown_error")
+        }
+        await send(response, on: connection)
     }
 
-    private func sendFailure(id: String, code: String, message: String, on connection: NWConnection) {
-        send(.failure(id: id, error: .init(code: code, message: message)), on: connection)
+    /// Sends a failure response and records the rejection so malformed and
+    /// unauthenticated requests are visible in the audit log. The audit record
+    /// carries only the request id, method, and code — never token material.
+    private func reject(id: String, method: String = "rejected", code: String, message: String, on connection: NWConnection) async {
+        await CompositorMCPAuditLog.shared.reject(requestId: id, method: method, code: code)
+        await send(.failure(id: id, error: .init(code: code, message: message)), on: connection)
     }
 
-    private func send(_ response: CompositorMCPBridgeResponse, on connection: NWConnection) {
+    private func send(_ response: CompositorMCPBridgeResponse, on connection: NWConnection) async {
         do {
             var data = try JSONEncoder().encode(response)
             data.append(0x0A)
-            connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
+            // Wait for the bytes to be processed before the next queued request runs,
+            // so one request's lifecycle fully completes before the next begins.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                connection.send(content: data, completion: .contentProcessed { _ in
+                    connection.cancel()
+                    continuation.resume()
+                })
+            }
         } catch {
             connection.cancel()
         }
+    }
+
+    /// Iteratively counts `{`/`[` nesting depth outside string literals. The scan
+    /// never recurses, tracks in-string and escape state, and is safe on raw UTF-8
+    /// because multi-byte sequences can never contain `"`, `\`, or bracket bytes.
+    private static func jsonDepthExceeds(_ data: Data, limit: Int) -> Bool {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for byte in data {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C { // backslash
+                    escaped = true
+                } else if byte == 0x22 { // closing quote
+                    inString = false
+                }
+                continue
+            }
+            switch byte {
+            case 0x22: // opening quote
+                inString = true
+            case 0x7B, 0x5B: // { [
+                depth += 1
+                if depth > limit { return true }
+            case 0x7D, 0x5D: // } ]
+                depth -= 1
+            default:
+                break
+            }
+        }
+        return false
     }
 
     private func isLoopback(_ endpoint: NWEndpoint) -> Bool {

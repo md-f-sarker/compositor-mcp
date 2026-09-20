@@ -36,6 +36,18 @@ Capabilities are labelled `read`, `write`, `filesystem` or `destructive`. Destru
 
 When enabled, the app writes one JSON object per attempted operation to `audit.jsonl`. The log includes timestamp, request ID, operation name, result and compact error details. It never records the bridge token.
 
+### Preview path pinning
+
+`preview.render` returns a path the server then reads back for inline previews and the `compositor://preview/latest` resource. To stop a compromised or buggy bridge turning that into an arbitrary-file oracle, the server only reads paths pinned to the preview convention — `<tmp>/Compositor-MCP/preview-*.png` — and verifies the PNG signature plus a hard size cap (1 MiB for inlining, 16 MiB for the resource) on the opened file. Any other path is ignored.
+
+### Elicitation is UX, not authorization
+
+When a client advertises elicitation, destructive batches ask once via `elicitation/create` before running. This is a convenience layer only: the same client can always set `confirmDestructive: true` itself, so an accepted prompt grants nothing the flag would not. Declines and cancels fail the batch with `confirmation_declined`; clients without elicitation keep the plain `confirmation_required` error.
+
+### Request timeouts
+
+Each bridge request is bounded by a timeout (default 30 s, `COMPOSITOR_MCP_TIMEOUT_MS` on the server process). A `bridge_timeout` means the server *abandoned* the request — the app may still complete the operation in the background. Because a timed-out mutation is indeterminate, retry it with the same `idempotencyKey` rather than resending blindly: the bridge deduplicates on the key.
+
 ## Known limitations
 
 - Any process running as the same macOS user can normally read that user's mode-0600 files and can therefore use the bridge while Compositor is running. Use a separate OS account for stronger isolation.

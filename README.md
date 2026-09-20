@@ -137,6 +137,8 @@ COMPOSITOR_MCP_MOCK=1 npm run dev
 npm run check
 ```
 
+The mock is a behavioural harness, not a rendering emulator: it covers about 40 of the 62 operations (documents, layers, selections, painting, filters and previews) so the MCP surface, validation and batch semantics can be exercised without macOS.
+
 ## Validation status
 
 The TypeScript projects build and type-check, all tests pass, the Swift sources pass parser validation, the capability parity check passes, and the installer/reinstaller/uninstaller smoke test runs in CI. A live AppKit/Xcode build and full bridge test on macOS 26 are tracked in [docs/release-validation.md](docs/release-validation.md).
@@ -144,6 +146,8 @@ The TypeScript projects build and type-check, all tests pass, the Swift sources 
 ## Uninstall from Compositor
 
 ```bash
+npx -y compositor-mcp uninstall-bridge /absolute/path/to/Compositor
+# or, from a source checkout:
 ./scripts/uninstall-from-compositor.sh /absolute/path/to/Compositor
 ```
 

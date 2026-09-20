@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   CAPABILITIES,
+  CAPABILITY_BY_NAME,
   isJsonObject,
   type BridgeRequest,
   type ExecuteRequest,
@@ -23,6 +24,15 @@ const MOCK_PREVIEW_PNG = Buffer.from(
   "base64",
 );
 
+/// The wire shape the real state builder emits for a layer mask
+/// (CompositorMCPState.swift): enabled/linked flags plus the mask asset's size.
+export interface MockMask {
+  enabled: boolean;
+  linked: boolean;
+  width: number;
+  height: number;
+}
+
 export interface MockLayer {
   id: string;
   name: string;
@@ -32,7 +42,10 @@ export interface MockLayer {
   parentId: string | null;
   group: boolean;
   transform: { x: number; y: number; width: number; height: number; rotation: number; flipX: boolean; flipY: boolean; sampling: string };
-  mask: boolean;
+  /** The layer's mask object, or null — matching the real state builder's mask field. */
+  mask: MockMask | null;
+  /** Clipping-mask source layer id (maskSourceID upstream), or null. */
+  maskSourceId: string | null;
   /** True for layers created by paint.shape, like the real state builder's `shape` flag. */
   shape: boolean;
   /** True for layers created by adjustment.add, like the real state builder's `adjustment` flag. */
@@ -67,6 +80,12 @@ export interface MockDocument {
 export class MockBridgeTransport implements BridgeTransport {
   private revision = 0;
   private document: MockDocument | null = null;
+  /// session.isMaskSelected — set by layer.select target:"mask", cleared when
+  /// the mask or its layer goes away.
+  private maskTargeted = false;
+  /// True while a dry-run validation pass is replaying an operation on a
+  /// throwaway document clone — suppresses preview.render's filesystem write.
+  private dryRunning = false;
   private previewImage: Buffer;
 
   constructor(options: { previewImage?: Buffer } = {}) {
@@ -76,18 +95,25 @@ export class MockBridgeTransport implements BridgeTransport {
   async request(method: BridgeRequest["method"], params?: JsonObject): Promise<JsonValue> {
     switch (method) {
       case "ping":
-        return { ok: true, mock: true, revision: this.revision };
+        // Same fields the real router answers, plus the mock marker.
+        return {
+          ok: true,
+          mock: true,
+          protocol: "compositor-bridge/1",
+          revision: this.revision,
+          processId: process.pid,
+          appVersion: "mock",
+        };
       case "capabilities":
         // Same envelope the real router answers — { protocol, implemented,
-        // revision } — with the full catalogue attached for the
-        // compositor://capabilities resource.
+        // revision }. The compositor://capabilities resource synthesises the
+        // catalogue from the shared registry, so it is not attached here.
         return {
           protocol: "compositor-bridge/1",
           implemented: CAPABILITIES.filter((capability) => capability.status === "implemented")
             .map((capability) => capability.name)
             .sort(),
           revision: this.revision,
-          catalogue: CAPABILITIES,
         } as unknown as JsonValue;
       case "state":
         return this.state();
@@ -100,20 +126,62 @@ export class MockBridgeTransport implements BridgeTransport {
     }
   }
 
-  private state(): JsonValue {
+  /// The same top-level envelope the real state builder emits:
+  /// { revision, projects, selectedProjectId, canSwitchProject, busy, document }.
+  /// `includeLayers` mirrors the bridge's state parameter — workspace.list
+  /// omits the layer list upstream.
+  private state(includeLayers = true): JsonValue {
+    const document = this.document;
     return {
       mock: true,
       revision: this.revision,
       projects: [
         {
           id: "mock-project",
-          title: this.document ? "Mock document" : "Untitled",
+          title: document ? "Mock document" : "Untitled",
           selected: true,
           modified: this.revision > 0,
+          hasDocument: document !== null,
+          path: null,
         },
       ],
-      current: this.document,
+      selectedProjectId: "mock-project",
+      canSwitchProject: true,
+      busy: false,
+      document: document === null ? null : this.documentValue(document, includeLayers),
     } as unknown as JsonValue;
+  }
+
+  /// The document object inside the state snapshot, keyed like
+  /// CompositorMCPStateBuilder's output. Mock-internal fields (fill coverage,
+  /// stored adjustment parameters) still ride along on the layer entries.
+  private documentValue(document: MockDocument, includeLayers: boolean): JsonObject {
+    const value: JsonObject = {
+      id: document.id,
+      width: document.width,
+      height: document.height,
+      resolution: document.resolution,
+      layerCount: document.layers.length,
+      activeLayerId: document.activeLayerId,
+      selectedLayerIds: [...document.selectedLayerIds].sort(),
+      maskTargeted: this.isMaskSelected(),
+      modified: this.revision > 0,
+      canUndo: false,
+      canRedo: false,
+      selection: document.selection === null ? null : { ...document.selection },
+    };
+    if (includeLayers) value["layers"] = document.layers.map((layer) => layerJson(layer));
+    return value;
+  }
+
+  /// session.isMaskSelected: the flag counts only while the active layer
+  /// actually carries a mask — the same condition the router re-applies when
+  /// it restores the mask target after a rolled-back batch.
+  private isMaskSelected(): boolean {
+    const document = this.document;
+    if (document === null) return false;
+    const active = document.layers.find((layer) => layer.id === document.activeLayerId);
+    return this.maskTargeted && active !== undefined && active.mask !== null;
   }
 
   private async execute(request: ExecuteRequest): Promise<JsonValue> {
@@ -122,17 +190,46 @@ export class MockBridgeTransport implements BridgeTransport {
       throw new CompositorMcpError("invalid_request", "At least one operation is required.");
     }
 
+    // The router checks every operation's precondition up front — a stale
+    // revision fails the whole request before the destructive gate runs.
+    for (const operation of operations) {
+      this.checkPrecondition(operation);
+    }
+
+    // The same confirmation gate the real router applies before anything runs
+    // (dryRun exempt): the destructive set is the catalogue's risk class, which
+    // the parity check keeps in lockstep with the router's list.
+    const destructiveNames = operations
+      .map((operation) => operation.name)
+      .filter((name) => CAPABILITY_BY_NAME.get(name)?.risk === "destructive");
+    if (destructiveNames.length > 0 && request.confirmDestructive !== true && request.dryRun !== true) {
+      throw new CompositorMcpError("confirmation_required", "Destructive operations require confirmDestructive: true.", {
+        details: { operations: [...new Set(destructiveNames)].sort() },
+      });
+    }
+
     if (request.dryRun) {
+      // Like the real router: every operation is validated in order against the
+      // untouched state, and a validation failure fails the whole request.
+      const results: OperationResult[] = [];
+      for (let index = 0; index < operations.length; index += 1) {
+        const operation = operations[index];
+        if (!operation) continue;
+        await this.validateOperation(operation);
+        results.push({ index, name: operation.name, ok: true, value: { valid: true } });
+      }
       return {
         ok: true,
         dryRun: true,
         atomic: request.atomic ?? true,
-        results: operations.map((operation, index) => ({ index, name: operation.name, ok: true, value: { valid: true } })),
+        revision: this.revision,
+        results,
         state: this.state(),
       } as unknown as JsonValue;
     }
 
     const before = structuredClone(this.document);
+    const beforeMaskTargeted = this.maskTargeted;
     const beforeRevision = this.revision;
     const results: OperationResult[] = [];
     let failed = false;
@@ -141,6 +238,9 @@ export class MockBridgeTransport implements BridgeTransport {
       const operation = operations[index];
       if (!operation) continue;
       try {
+        // Re-checked per operation like the router: an earlier op can move the
+        // document or revision mid-batch.
+        this.checkPrecondition(operation);
         const value = await this.apply(operation);
         results.push({ index, name: operation.name, ok: true, value });
       } catch (error) {
@@ -154,6 +254,7 @@ export class MockBridgeTransport implements BridgeTransport {
     let rolledBack = false;
     if (failed && (request.atomic ?? true)) {
       this.document = before;
+      this.maskTargeted = beforeMaskTargeted;
       this.revision = beforeRevision;
       rolledBack = true;
     }
@@ -170,32 +271,106 @@ export class MockBridgeTransport implements BridgeTransport {
     } as unknown as JsonValue;
   }
 
+  /// The router's optimistic-concurrency guard (checkPrecondition): revision
+  /// drift, a moved project or a replaced document fail retryably before the
+  /// operation runs. Mock project is the single "mock-project" tab.
+  private checkPrecondition(operation: Operation): void {
+    const precondition = operation.precondition;
+    if (!isJsonObject(precondition)) return;
+    const revision = precondition["revision"];
+    if (typeof revision === "number" && revision !== this.revision) {
+      throw new CompositorMcpError("revision_conflict", "Editor revision changed.", {
+        details: { expected: revision, actual: this.revision },
+        retryable: true,
+      });
+    }
+    const projectId = precondition["projectId"];
+    if (typeof projectId === "string" && projectId !== "current" && projectId !== "mock-project") {
+      throw new CompositorMcpError("project_conflict", "The selected project no longer matches the precondition.", { retryable: true });
+    }
+    const documentId = precondition["documentId"];
+    if (typeof documentId === "string" && documentId !== this.document?.id) {
+      throw new CompositorMcpError("document_conflict", "The current document no longer matches the precondition.", { retryable: true });
+    }
+  }
+
+  /// The dry-run pass: the real router validates each operation against the
+  /// unmutated session, so the mock replays apply on a throwaway document
+  /// clone — catching the same argument and state errors without side effects
+  /// (preview.render's file write is suppressed via the dryRunning flag).
+  private async validateOperation(operation: Operation): Promise<void> {
+    const document = this.document;
+    const maskTargeted = this.maskTargeted;
+    const revision = this.revision;
+    this.document = structuredClone(this.document);
+    this.dryRunning = true;
+    try {
+      await this.apply(operation);
+    } finally {
+      this.document = document;
+      this.maskTargeted = maskTargeted;
+      this.revision = revision;
+      this.dryRunning = false;
+    }
+  }
+
   private async apply(operation: Operation): Promise<JsonValue> {
     const args = operation.arguments ?? {};
     switch (operation.name) {
       case "app.ping":
         return { ok: true, mock: true };
       case "app.getState":
+        return this.state(optionalBoolean(args, "includeLayers") ?? true);
       case "workspace.list":
-      case "layer.list":
-        return this.state();
+        return this.state(false);
+      case "layer.list": {
+        // The real router's envelope — a layer list scoped to one project tab,
+        // not the whole state snapshot.
+        const requested = optionalString(args, "projectId") ?? "current";
+        if (requested !== "current" && requested !== "mock-project") {
+          throw new CompositorMcpError("not_found", `Project not found: ${requested}`);
+        }
+        const document = this.document;
+        return {
+          projectId: "mock-project",
+          documentId: document?.id ?? null,
+          activeLayerId: document?.activeLayerId ?? null,
+          selectedLayerIds: document ? [...document.selectedLayerIds].sort() : [],
+          layers: document ? document.layers.map((layer) => layerJson(layer)) : [],
+        } as unknown as JsonValue;
+      }
       case "selection.get":
         return this.selectionValue();
       case "document.create": {
         const width = requiredNumber(args, "width");
         const height = requiredNumber(args, "height");
-        this.document = {
+        // requiredInt upstream: whole-pixel dimensions inside the canvas limit,
+        // resolution inside the DPI range.
+        if (!Number.isInteger(width) || !Number.isInteger(height)) {
+          throw new CompositorMcpError("invalid_arguments", "width and height must be integers.");
+        }
+        checkBounds(width, "Document dimensions", 1, 30_000, " pixels");
+        checkBounds(height, "Document dimensions", 1, 30_000, " pixels");
+        const document: MockDocument = {
           id: randomUUID(),
           width,
           height,
-          resolution: optionalNumber(args, "resolution") ?? 72,
+          resolution: boundedNumber(args, "resolution", 1, 2400, " DPI") ?? 72,
           layers: [],
           activeLayerId: null,
           selectedLayerIds: [],
           selection: null,
         };
+        // Upstream creates the document with one blank layer (emptyLayer: true)
+        // that becomes active, and answers { projectId, documentId, activeLayerId }.
+        const layer = mockLayer(document, { name: "Layer 1" });
+        document.layers.push(layer);
+        document.activeLayerId = layer.id;
+        document.selectedLayerIds = [layer.id];
+        this.document = document;
+        this.maskTargeted = false;
         this.revision += 1;
-        return { documentId: this.document.id };
+        return { projectId: "mock-project", documentId: document.id, activeLayerId: layer.id };
       }
       case "document.crop": {
         const document = this.requireDocument();
@@ -273,8 +448,9 @@ export class MockBridgeTransport implements BridgeTransport {
         document.layers.push(layer);
         document.activeLayerId = layer.id;
         document.selectedLayerIds = [layer.id];
+        this.maskTargeted = false;
         this.revision += 1;
-        return layer as unknown as JsonValue;
+        return layerJson(layer);
       }
       case "layer.group": {
         const document = this.requireDocument();
@@ -295,8 +471,9 @@ export class MockBridgeTransport implements BridgeTransport {
         }
         document.activeLayerId = group.id;
         document.selectedLayerIds = [group.id];
+        this.maskTargeted = false;
         this.revision += 1;
-        return group as unknown as JsonValue;
+        return layerJson(group);
       }
       case "layer.ungroup": {
         const document = this.requireDocument();
@@ -318,6 +495,7 @@ export class MockBridgeTransport implements BridgeTransport {
         document.layers.splice(insertion, 0, ...children);
         document.activeLayerId = children.length > 0 ? children[children.length - 1]!.id : null;
         document.selectedLayerIds = children.map((child) => child.id);
+        this.maskTargeted = false;
         this.revision += 1;
         return { ungroupedLayerId: id, childLayerIds: children.map((child) => child.id) };
       }
@@ -333,8 +511,10 @@ export class MockBridgeTransport implements BridgeTransport {
         }
         const sampling = optionalString(args, "sampling");
         if (sampling !== undefined) layer.transform.sampling = sampling;
+        // Upstream transform/distort exit mask targeting when they take over.
+        this.maskTargeted = false;
         this.revision += 1;
-        return layer as unknown as JsonValue;
+        return layerJson(layer);
       }
       case "layer.distort": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
@@ -350,8 +530,9 @@ export class MockBridgeTransport implements BridgeTransport {
         layer.transform.width = Math.ceil(bounds.right) - left;
         layer.transform.height = Math.ceil(bounds.bottom) - top;
         layer.transform.rotation = 0;
+        this.maskTargeted = false;
         this.revision += 1;
-        return layer as unknown as JsonValue;
+        return layerJson(layer);
       }
       case "layer.addMask": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
@@ -359,35 +540,92 @@ export class MockBridgeTransport implements BridgeTransport {
         if (!["reveal", "hide", "from-selection"].includes(mode)) {
           throw new CompositorMcpError("invalid_arguments", "mode must be reveal, hide or from-selection.");
         }
-        if (layer.mask) throw new CompositorMcpError("mask_exists", "The layer already has a mask.");
+        if (layer.mask !== null) throw new CompositorMcpError("mask_exists", "The layer already has a mask.");
         if (mode === "from-selection" && !this.requireDocument().selection) {
           throw new CompositorMcpError("selection_required", "from-selection requires an active selection.");
         }
-        layer.mask = true;
+        layer.mask = newMask(layer);
         this.revision += 1;
-        return layer as unknown as JsonValue;
+        return layerJson(layer);
+      }
+      case "layer.deleteMask": {
+        const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
+        if (layer.mask === null) throw new CompositorMcpError("not_found", "Layer mask not found.");
+        layer.mask = null;
+        if (layer.id === this.requireDocument().activeLayerId) this.maskTargeted = false;
+        this.revision += 1;
+        return { layerId: layer.id, hasMask: false };
+      }
+      case "layer.setMaskLinked": {
+        const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
+        const linked = requiredBoolean(args, "linked");
+        if (layer.mask === null) throw new CompositorMcpError("not_found", "Layer mask not found.");
+        layer.mask.linked = linked;
+        this.revision += 1;
+        return { layerId: layer.id, linked };
+      }
+      case "layer.setClippingMask": {
+        const document = this.requireDocument();
+        const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
+        const enabled = requiredBoolean(args, "enabled");
+        if ((layer.maskSourceId !== null) !== enabled) {
+          if (enabled) {
+            // The clipping source is the next sibling below in the stack.
+            const index = document.layers.indexOf(layer);
+            const below = document.layers.slice(0, index).reverse().find((candidate) => candidate.parentId === layer.parentId);
+            if (below === undefined) {
+              throw new CompositorMcpError("clipping_mask_unavailable", "This layer cannot change its clipping-mask relationship.");
+            }
+            layer.maskSourceId = below.id;
+          } else {
+            layer.maskSourceId = null;
+          }
+        }
+        this.revision += 1;
+        return { layerId: layer.id, enabled };
       }
       case "layer.featherMask": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
         const radius = requiredNumber(args, "radius");
         checkBounds(radius, "radius", 0, 10_000, " pixels");
-        if (!layer.mask) throw new CompositorMcpError("not_found", "Layer mask not found.");
+        if (layer.mask === null) throw new CompositorMcpError("not_found", "Layer mask not found.");
         this.revision += 1;
         return { layerId: layer.id, radius, hasMask: true };
       }
       case "layer.select": {
         const document = this.requireDocument();
         const ids = requiredStringArray(args, "layerIds").map((id) => this.resolveLayerId(id));
+        if (ids.length < 1 || ids.length > 100) {
+          throw new CompositorMcpError("invalid_arguments", "layerIds must contain between 1 and 100 ids.");
+        }
         for (const id of ids) this.requireLayer(id);
+        const target = optionalString(args, "target") ?? "layer";
+        if (target !== "layer" && target !== "mask") {
+          throw new CompositorMcpError("invalid_arguments", "target must be layer or mask.");
+        }
+        // Same rule as the router: targeting a mask requires the last-selected
+        // (active) layer to actually have one.
+        const active = this.requireLayer(ids[ids.length - 1]!);
+        if (target === "mask" && active.mask === null) {
+          throw new CompositorMcpError("not_found", "The active target layer has no mask.");
+        }
+        const nextActive = ids[ids.length - 1] ?? null;
+        const nextMaskTarget = target === "mask";
+        const changed =
+          document.activeLayerId !== nextActive ||
+          document.selectedLayerIds.join("") !== ids.join("") ||
+          this.maskTargeted !== nextMaskTarget;
         document.selectedLayerIds = ids;
-        document.activeLayerId = ids.length > 0 ? ids[ids.length - 1] ?? null : null;
+        document.activeLayerId = nextActive;
+        this.maskTargeted = nextMaskTarget;
+        if (changed) this.revision += 1;
         return { selectedLayerIds: ids };
       }
       case "layer.rename": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
         layer.name = requiredString(args, "name");
         this.revision += 1;
-        return layer as unknown as JsonValue;
+        return layerJson(layer);
       }
       case "layer.setOpacity": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
@@ -404,9 +642,37 @@ export class MockBridgeTransport implements BridgeTransport {
       case "layer.delete": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
         const document = this.requireDocument();
-        document.layers.splice(document.layers.indexOf(layer), 1);
-        document.activeLayerId = document.layers.length > 0 ? document.layers[document.layers.length - 1]?.id ?? null : null;
-        document.selectedLayerIds = document.activeLayerId ? [document.activeLayerId] : [];
+        // Deleting removes the layer's whole subtree; upstream first refuses
+        // when live clipping masks outside it depend on a layer inside it.
+        const removed = new Set<string>([layer.id]);
+        for (let changed = true; changed;) {
+          changed = false;
+          for (const candidate of document.layers) {
+            if (candidate.parentId !== null && removed.has(candidate.parentId) && !removed.has(candidate.id)) {
+              removed.add(candidate.id);
+              changed = true;
+            }
+          }
+        }
+        const dependants = document.layers.filter(
+          (candidate) => !removed.has(candidate.id) && candidate.maskSourceId !== null && removed.has(candidate.maskSourceId),
+        );
+        if (dependants.length > 0) {
+          throw new CompositorMcpError(
+            "dependent_live_masks",
+            "Delete would require an interactive bake-or-unlink choice. Release those clipping masks first.",
+            { details: { dependentLayerIds: dependants.map((candidate) => candidate.id) } },
+          );
+        }
+        document.layers = document.layers.filter((candidate) => !removed.has(candidate.id));
+        document.selectedLayerIds = document.selectedLayerIds.filter((id) => !removed.has(id));
+        if (document.activeLayerId === null || removed.has(document.activeLayerId)) {
+          document.activeLayerId = document.layers.length > 0 ? document.layers[document.layers.length - 1]!.id : null;
+        }
+        if (document.selectedLayerIds.length === 0) {
+          document.selectedLayerIds = document.activeLayerId === null ? [] : [document.activeLayerId];
+        }
+        this.maskTargeted = this.isMaskSelected();
         this.revision += 1;
         return { deletedLayerId: layer.id };
       }
@@ -463,9 +729,12 @@ export class MockBridgeTransport implements BridgeTransport {
         const mode = selectionMode(args);
         // Approximation: mock pixel layers are a uniform colour, so a matching seed
         // floods a tolerance-scaled patch centred on the point (clipped to the canvas).
-        // A document without a pixel layer has nothing to sample, so nothing matches —
+        // Only a layer with real pixels — painted/filled coverage or a shape render —
+        // has anything to sample; blank layers and groups do not, matching the real
+        // wand's pixel-content semantics. With nothing to sample, nothing matches:
         // upstream then deselects in replace mode and leaves the selection otherwise.
-        if (document.layers.some((layer) => !layer.group)) {
+        const hasPixels = document.layers.some((layer) => !layer.group && (layer.fill !== null || layer.shape));
+        if (hasPixels) {
           const half = Math.max(1, tolerance);
           this.combineSelection({ x: x - half, y: y - half, width: half * 2, height: half * 2 }, mode);
         } else if (mode === "replace") {
@@ -499,6 +768,10 @@ export class MockBridgeTransport implements BridgeTransport {
         const hardness = boundedNumber(args, "hardness", 0, 1) ?? 1;
         const strengthKey = operation.name === "paint.blur" ? "strength" : "opacity";
         const strength = boundedNumber(args, strengthKey, 0.01, 1) ?? 1;
+        // The pixels-only tools (Spot Healing, Clone Stamp, and the warp modes
+        // behind paint.blur) refuse a mask target, exactly like the real
+        // requirePaintTarget's pixelsOnly gate.
+        let pixelsOnlyTool: string | null = null;
         switch (operation.name) {
           case "paint.brushStroke": {
             const mode = optionalString(args, "mode") ?? "paint";
@@ -513,12 +786,14 @@ export class MockBridgeTransport implements BridgeTransport {
             if (!SPOT_HEAL_MODES.includes(mode)) {
               throw new CompositorMcpError("invalid_arguments", "mode must be Content-Aware, Create Texture or Proximity Match.");
             }
+            pixelsOnlyTool = "Spot Healing";
             break;
           }
           case "paint.clone": {
             requiredPoint(args, "source");
             optionalBoolean(args, "aligned");
             optionalBoolean(args, "sampleAllLayers");
+            pixelsOnlyTool = "Clone Stamp";
             break;
           }
           default: {
@@ -526,18 +801,23 @@ export class MockBridgeTransport implements BridgeTransport {
             if (!BLUR_MODES.includes(mode)) {
               throw new CompositorMcpError("invalid_arguments", "mode must be Blur, Smudge or Liquify.");
             }
+            if (mode !== "Blur") pixelsOnlyTool = mode;
             break;
           }
         }
+        if (pixelsOnlyTool !== null && this.isMaskSelected()) {
+          throw new CompositorMcpError("pixel_edit_unavailable", `${pixelsOnlyTool} works on a layer's pixels, not its mask.`);
+        }
+        const mask = this.isMaskSelected();
         // Approximation: coverage is the point bounds grown by the brush radius, clipped
         // to the canvas and the active selection — the mock stores no pixels.
         const bounds = strokeBounds(points, diameter / 2, document);
         if (!bounds) {
-          return { applied: false, layerId: layer.id, mask: false, points: points.length, bounds: null };
+          return { applied: false, layerId: layer.id, mask, points: points.length, bounds: null };
         }
         layer.fill = bounds;
         this.revision += 1;
-        return { applied: true, layerId: layer.id, mask: false, points: points.length, bounds: boundsJson(bounds) };
+        return { applied: true, layerId: layer.id, mask, points: points.length, bounds: boundsJson(bounds) };
       }
       case "paint.gradient": {
         const { document, layer } = this.requirePaintTarget();
@@ -569,15 +849,18 @@ export class MockBridgeTransport implements BridgeTransport {
           }
         }
         // A sub-half-pixel line is the click the gradient tool discards.
+        // Gradients are pixelsOnly: false upstream — a mask target is legal and
+        // reported through the outcome's mask flag like every other stroke.
+        const mask = this.isMaskSelected();
         if (Math.hypot(end.x - start.x, end.y - start.y) < 0.5 || opacity <= 0) {
-          return { applied: false, layerId: layer.id, mask: false, points: 0, bounds: null };
+          return { applied: false, layerId: layer.id, mask, points: 0, bounds: null };
         }
         const bounds: MockSelection = document.selection
           ? { ...document.selection }
           : { x: 0, y: 0, width: document.width, height: document.height };
         layer.fill = bounds;
         this.revision += 1;
-        return { applied: true, layerId: layer.id, mask: false, points: 0, bounds: boundsJson(bounds) };
+        return { applied: true, layerId: layer.id, mask, points: 0, bounds: boundsJson(bounds) };
       }
       case "paint.shape": {
         const document = this.requireDocument();
@@ -672,7 +955,7 @@ export class MockBridgeTransport implements BridgeTransport {
         const layer = this.filterTarget(document, kind);
         if (kind === "Remove Background") {
           // commitBackgroundMask semantics: the subject is kept via a new mask.
-          layer.mask = true;
+          layer.mask = newMask(layer);
         } else {
           // FilterEdit.blurMargin: the committed render can grow the layer — Gaussian by
           // ceil(radius * 3 + 2), Motion Blur by ceil(distance / 2 + 2) document pixels.
@@ -690,7 +973,9 @@ export class MockBridgeTransport implements BridgeTransport {
             : { x: layer.transform.x, y: layer.transform.y, width: layer.transform.width, height: layer.transform.height };
         }
         this.revision += 1;
-        return { applied: true, kind, layerId: layer.id, mask: layer.mask };
+        // runFilter's outcome: applied/kind/layerId plus the post-edit layer
+        // snapshot and whether it carries a mask.
+        return { applied: true, kind, layerId: layer.id, mask: layer.mask !== null, layer: layerJson(layer) };
       }
       case "pixels.contentAwareFill": {
         const document = this.requireDocument();
@@ -707,12 +992,16 @@ export class MockBridgeTransport implements BridgeTransport {
         layer.transform.height = bottom - top;
         layer.fill = { ...selection };
         this.revision += 1;
-        return { applied: true, kind: "Content-Aware Fill", layerId: layer.id, mask: layer.mask };
+        return { applied: true, kind: "Content-Aware Fill", layerId: layer.id, mask: layer.mask !== null, layer: layerJson(layer) };
       }
       case "preview.render": {
         const document = this.requireDocument();
         // Same convention the bridge uses: a full-resolution PNG under
         // <tmp>/Compositor-MCP/preview-<uuid>.png, returning path + dimensions.
+        // Dry-run validation replays here — it must not touch the filesystem.
+        if (this.dryRunning) {
+          return { path: null, width: document.width, height: document.height, mediaType: "image/png" };
+        }
         await fs.mkdir(PREVIEW_DIRECTORY, { recursive: true, mode: 0o700 });
         const destination = path.join(PREVIEW_DIRECTORY, `preview-${randomUUID()}.png`);
         await fs.writeFile(destination, this.previewImage, { mode: 0o600 });
@@ -799,7 +1088,7 @@ export class MockBridgeTransport implements BridgeTransport {
 
   private requireLayer(id: string): MockLayer {
     const layer = this.requireDocument().layers.find((candidate) => candidate.id === id);
-    if (!layer) throw new CompositorMcpError("layer_not_found", `Layer not found: ${id}`);
+    if (!layer) throw new CompositorMcpError("not_found", `Layer not found: ${id}`);
     return layer;
   }
 
@@ -827,6 +1116,9 @@ export class MockBridgeTransport implements BridgeTransport {
     if (layer.group) {
       throw new CompositorMcpError("invalid_arguments", "Filters apply to a pixel layer, not a group.");
     }
+    if (this.isMaskSelected()) {
+      throw new CompositorMcpError("pixel_edit_unavailable", `${kind} works on a layer's pixels, not its mask.`);
+    }
     if (kind === "Content-Aware Fill" && !document.selection) {
       throw new CompositorMcpError("selection_required", "Content-Aware Fill needs a non-empty selection.");
     }
@@ -847,7 +1139,8 @@ function mockLayer(document: MockDocument, overrides: Partial<MockLayer> = {}): 
     parentId: null,
     group: false,
     transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
-    mask: false,
+    mask: null,
+    maskSourceId: null,
     shape: false,
     adjustment: false,
     adjustmentKind: null,
@@ -855,6 +1148,33 @@ function mockLayer(document: MockDocument, overrides: Partial<MockLayer> = {}): 
     fill: null,
     ...overrides,
   };
+}
+
+/// A fresh mask record, like the router's addMask: enabled and linked, sized to
+/// the layer's frame.
+function newMask(layer: MockLayer): MockMask {
+  return {
+    enabled: true,
+    linked: true,
+    width: Math.max(1, Math.round(layer.transform.width)),
+    height: Math.max(1, Math.round(layer.transform.height)),
+  };
+}
+
+/// The layer wire shape the real state builder emits (CompositorMCPState.swift):
+/// id/name/flags, derived hasMask and maskSourceId, the mask object or null, and
+/// a pixels size whenever the layer carries a pixel asset — which for the mock
+/// is every non-group, non-adjustment layer. Mock-internal bookkeeping fields
+/// (fill coverage, stored adjustment parameters) ride along for assertions.
+function layerJson(layer: MockLayer): JsonObject {
+  const hasAsset = !layer.group && !layer.adjustment;
+  return {
+    ...layer,
+    hasMask: layer.mask !== null,
+    pixels: hasAsset
+      ? { width: Math.max(1, Math.round(layer.transform.width)), height: Math.max(1, Math.round(layer.transform.height)) }
+      : null,
+  } as unknown as JsonObject;
 }
 
 function requiredString(object: JsonObject, key: string): string {

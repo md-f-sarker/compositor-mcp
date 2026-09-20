@@ -69,8 +69,15 @@ extension CompositorMCPCommandRouter {
                 throw CompositorMCPCommandError.invalid("opacity must be between 0 and 1.")
             }
             _ = try arguments.optionalBool("reversed")
-            _ = try requireGradientStops(arguments)
+            let stops = try requireGradientStops(arguments)
             _ = try requirePaintTarget(session, pixelsOnly: false, tool: "Gradient")
+            // The explicit-stops path renders a region-sized ramp image on the MainActor;
+            // with no selection that region is the whole canvas, so the shape pixel budget
+            // can be enforced exactly here (a selection can only shrink it).
+            if stops != nil, session.selection == nil, let document = session.document,
+               document.width * document.height > EditorSession.maxShapePixels {
+                throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to 100 megapixels.")
+            }
         case "paint.shape":
             let kind = try arguments.optionalString("kind") ?? "Rectangle"
             guard shapeKind(kind) != nil else {
@@ -154,17 +161,15 @@ extension CompositorMCPCommandRouter {
             cloneSettings.aligned = aligned
             cloneSettings.sampleAllLayers = try arguments.optionalBool("sampleAllLayers") ?? false
             session.cloneSettings = cloneSettings
+            defer { session.cloneSettings = previousCloneSettings }
             if session.cloneSource != source { session.setCloneSource(source) }
             guard let offset = session.cloneStrokeOffset(at: points[0]) else {
-                session.cloneSettings = previousCloneSettings
                 throw CompositorMCPCommandError.invalid("Clone Stamp needs a source point to sample from.")
             }
             guard let sample = session.cloneSample(document) else {
-                session.cloneSettings = previousCloneSettings
                 throw CompositorMCPCommandError(code: "clone_failed", message: "The clone source could not be sampled.")
             }
             session.cloneOffset = offset
-            session.cloneSettings = previousCloneSettings
             let color = try strokeColor(arguments, mask: false, session: session)
             let settings = strokeSettings(arguments, color: color)
             let stroke = try makeStroke(for: layer, settings: settings, session: session)
@@ -193,8 +198,8 @@ extension CompositorMCPCommandRouter {
                 // so the per-call settings are installed for the sampling call only.
                 let previousBrushSettings = session.brushSettings
                 session.brushSettings = settings
+                defer { session.brushSettings = previousBrushSettings }
                 let sample = session.blurSample(document, mask: session.isMaskSelected)
-                session.brushSettings = previousBrushSettings
                 guard let sample else {
                     return strokeOutcome(stroke: nil, layer: layer, mask: session.isMaskSelected, points: points.count, applied: false)
                 }
@@ -276,12 +281,13 @@ extension CompositorMCPCommandRouter {
             guard !stroke.patches.isEmpty else {
                 return strokeOutcome(stroke: stroke, layer: layer, mask: stroke.isMask, points: 0, applied: false)
             }
+            let gradientUndoBefore = session.history.undoCount
             do {
                 try await session.commitRasterEdit(stroke, name: stroke.isMask ? "Gradient Mask" : "Gradient")
             } catch {
                 throw CompositorMCPCommandError(code: "gradient_failed", message: error.localizedDescription)
             }
-            return strokeOutcome(stroke: stroke, layer: layer, mask: stroke.isMask, points: 0, applied: true)
+            return strokeOutcome(stroke: stroke, layer: layer, mask: stroke.isMask, points: 0, applied: session.history.undoCount > gradientUndoBefore)
 
         case "paint.shape":
             guard session.document != nil else {
@@ -477,12 +483,15 @@ extension CompositorMCPCommandRouter {
         guard !stroke.patches.isEmpty else {
             return strokeOutcome(stroke: stroke, layer: stroke.layer, mask: stroke.isMask, points: points, applied: false)
         }
+        let undoCountBefore = session.history.undoCount
         do {
             try await session.commitRasterEdit(stroke, name: name)
         } catch {
             throw CompositorMCPCommandError(code: "paint_failed", message: error.localizedDescription)
         }
-        return strokeOutcome(stroke: stroke, layer: stroke.layer, mask: stroke.isMask, points: points, applied: true)
+        // commitRasterEdit returns early without writing when the layer's pixels,
+        // transform or mask changed under the stroke — report that as a no-op.
+        return strokeOutcome(stroke: stroke, layer: stroke.layer, mask: stroke.isMask, points: points, applied: session.history.undoCount > undoCountBefore)
     }
 
     /// Uniform paint outcome: the target layer, whether its mask was painted, the input
@@ -538,6 +547,11 @@ extension CompositorMCPCommandRouter {
         // The ramp is rendered at the region's extent — a full-canvas image could mean
         // gigabytes for a small selection — and re-anchored through the clone offset.
         let extent = region.integral
+        // Same budget the Shape tool applies before it renders: the region-sized CGImage
+        // below would otherwise allocate unbounded memory on a very large canvas.
+        guard Int(extent.width) * Int(extent.height) <= EditorSession.maxShapePixels else {
+            throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to 100 megapixels.")
+        }
         let image = try gradientImage(stops: stops, shape: shape, start: start, end: end,
                                       extent: extent, reversed: reversed)
         stroke.clone = (image, CGSize(width: -extent.minX, height: -extent.minY))

@@ -64,7 +64,7 @@ async function withFakeBridge(
       host: "127.0.0.1",
       port,
       token: "b".repeat(64),
-      pid: 4321,
+      pid: process.pid,
       startedAt: new Date().toISOString(),
       appVersion: "9.9.9-test",
     }),
@@ -108,7 +108,7 @@ test("doctor against a live bridge prints version, capabilities and roots", asyn
     await withFakeBridge(
       (method) => {
         if (method === "ping") {
-          return { ok: true, protocol: "compositor-bridge/1", revision: 7, processId: 4321, appVersion: "9.9.9-test" };
+          return { ok: true, protocol: "compositor-bridge/1", revision: 7, processId: process.pid, appVersion: "9.9.9-test" };
         }
         if (method === "capabilities") {
           return { protocol: "compositor-bridge/1", implemented: ["app.ping", "app.getState", "layer.list"], revision: 7 };
@@ -176,6 +176,38 @@ test("configure writes owner-only config.json with resolved roots", async () => 
     assert.deepEqual(parsed.allowedRoots, [pictures]);
     assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
     assert.equal((await fs.stat(configDir)).mode & 0o777, 0o700);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("configure merges an existing config.json instead of clobbering its flags", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-config-"));
+  const pictures = path.join(directory, "Pictures");
+  const downloads = path.join(directory, "Downloads");
+  const configDir = path.join(directory, "MCP");
+  await fs.mkdir(pictures);
+  await fs.mkdir(downloads);
+  await fs.mkdir(configDir, { recursive: true });
+  try {
+    // A user who disabled the bridge and its audit log must not be re-enabled
+    // by re-running configure; allowedRoots is the field the command owns.
+    await fs.writeFile(
+      path.join(configDir, "config.json"),
+      JSON.stringify({ enabled: false, allowedRoots: [pictures], auditLogging: false, futureKey: "kept" }),
+    );
+    const { io } = captureIo({ COMPOSITOR_MCP_CONFIG_DIR: configDir });
+    assert.equal(await runCli(["configure", downloads], io), 0);
+    const parsed = JSON.parse(await fs.readFile(path.join(configDir, "config.json"), "utf8")) as {
+      enabled: boolean;
+      allowedRoots: string[];
+      auditLogging: boolean;
+      futureKey?: string;
+    };
+    assert.equal(parsed.enabled, false);
+    assert.equal(parsed.auditLogging, false);
+    assert.ok(parsed.allowedRoots.includes(downloads));
+    assert.equal(parsed.futureKey, "kept");
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }

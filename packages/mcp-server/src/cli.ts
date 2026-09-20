@@ -23,6 +23,7 @@ Usage:
   compositor-mcp serve                    Same as above, explicitly
   compositor-mcp doctor                   Verify the discovery file, bridge and configuration
   compositor-mcp install-bridge <dir>     Install the native bridge into a Compositor checkout
+  compositor-mcp uninstall-bridge <dir>   Remove the bridge from a Compositor checkout
   compositor-mcp configure <dir> [...]    Authorize filesystem roots for file operations
   compositor-mcp --help                   Show this help
 
@@ -31,6 +32,8 @@ Environment:
   COMPOSITOR_MCP_CONFIG_DIR    Override the bridge configuration directory
   COMPOSITOR_MCP_TIMEOUT_MS    Bridge request timeout in milliseconds (default 30000)
   COMPOSITOR_MCP_MOCK=1        Serve/diagnose against the built-in mock bridge
+  COMPOSITOR_MCP_INSTALLER     Override the bundled install script path
+  COMPOSITOR_MCP_UNINSTALLER   Override the bundled uninstall script path
 `;
 
 const EXIT_USAGE = 64;
@@ -50,6 +53,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       return doctor(rest, io);
     case "install-bridge":
       return installBridge(rest, io);
+    case "uninstall-bridge":
+      return uninstallBridge(rest, io);
     case "configure":
       return configure(rest, io);
     default:
@@ -136,41 +141,81 @@ async function doctor(args: string[], io: CliIo): Promise<number> {
   }
 }
 
-async function readConfiguredRoots(directory: string): Promise<string[] | null> {
-  let text: string;
+/// Parsed config.json contents; null when the file is absent or corrupt — both
+/// doctor and configure treat an unreadable file as "no config" rather than
+/// failing, and configure merges onto whatever survives.
+async function readConfigObject(file: string): Promise<JsonObject | null> {
   try {
-    text = await fs.readFile(path.join(directory, "config.json"), "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    return Array.isArray(parsed["allowedRoots"]) ? parsed["allowedRoots"].filter((root): root is string => typeof root === "string") : [];
+    const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    return isJsonObject(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-// --- install-bridge ---------------------------------------------------------
+async function readConfiguredRoots(directory: string): Promise<string[] | null> {
+  const config = await readConfigObject(path.join(directory, "config.json"));
+  if (config === null) return null;
+  const roots = config["allowedRoots"];
+  return Array.isArray(roots) ? roots.filter((root): root is string => typeof root === "string") : [];
+}
+
+// --- install-bridge / uninstall-bridge --------------------------------------
+
+/// The bundled shell scripts do real filesystem and git work; a hung child
+/// must not stall the CLI forever, and its output is capped rather than
+/// buffering without bound.
+const BRIDGE_SCRIPT_TIMEOUT_MS = 300_000;
+const BRIDGE_SCRIPT_MAX_BUFFER = 8 * 1024 * 1024;
 
 async function installBridge(args: string[], io: CliIo): Promise<number> {
+  return runBridgeScript(args, io, {
+    command: "install-bridge",
+    script: "install-into-compositor.sh",
+    overrideEnv: "COMPOSITOR_MCP_INSTALLER",
+  });
+}
+
+async function uninstallBridge(args: string[], io: CliIo): Promise<number> {
+  return runBridgeScript(args, io, {
+    command: "uninstall-bridge",
+    script: "uninstall-from-compositor.sh",
+    overrideEnv: "COMPOSITOR_MCP_UNINSTALLER",
+  });
+}
+
+async function runBridgeScript(
+  args: string[],
+  io: CliIo,
+  options: { command: string; script: string; overrideEnv: string },
+): Promise<number> {
   if (args.length !== 1 || args[0] === undefined || args[0].startsWith("-")) {
-    io.err("Usage: compositor-mcp install-bridge /absolute/path/to/Compositor");
+    io.err(`Usage: compositor-mcp ${options.command} /absolute/path/to/Compositor`);
     return EXIT_USAGE;
   }
 
-  const script = await resolveInstaller(io.env);
+  const script = await resolveScript(io.env, options.script, options.overrideEnv);
   if (script === null) {
-    io.err("The bundled installer is missing from this package; reinstall compositor-mcp.");
+    io.err(`The bundled ${options.script} is missing from this package; reinstall compositor-mcp.`);
     return EXIT_SOFTWARE;
   }
 
-  // Inherit the ambient environment (the installer needs PATH for git/python3)
+  // Inherit the ambient environment (the scripts need PATH for git/python3)
   // with the caller's overrides layered on top.
-  const result = spawnSync("bash", [script, args[0]], { encoding: "utf8", env: { ...process.env, ...io.env } });
+  const result = spawnSync("bash", [script, args[0]], {
+    encoding: "utf8",
+    env: { ...process.env, ...io.env },
+    timeout: BRIDGE_SCRIPT_TIMEOUT_MS,
+    maxBuffer: BRIDGE_SCRIPT_MAX_BUFFER,
+  });
   if (result.error) {
-    io.err(`Failed to run ${script}: ${result.error.message}`);
+    const signal = result.signal ? ` (terminated by ${result.signal})` : "";
+    io.err(`Failed to run ${script}: ${result.error.message}${signal}`);
     return EXIT_UNAVAILABLE;
+  }
+  if (result.signal) {
+    io.err(`${script} was terminated by signal ${result.signal}.`);
+    return EXIT_SOFTWARE;
   }
   if (result.stdout) io.out(result.stdout.trimEnd());
   if (result.stderr) io.err(result.stderr.trimEnd());
@@ -181,16 +226,16 @@ async function installBridge(args: string[], io: CliIo): Promise<number> {
 /// published tarball, then the monorepo checkout (dev/test convenience). The
 /// repo fallback is gated on a sibling protocol workspace so an installed
 /// package never picks up an unrelated user script.
-async function resolveInstaller(env: NodeJS.ProcessEnv): Promise<string | null> {
+async function resolveScript(env: NodeJS.ProcessEnv, scriptName: string, overrideEnv: string): Promise<string | null> {
   const packageRoot = fileURLToPath(new URL("../", import.meta.url));
   const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
   const candidates = [
-    env.COMPOSITOR_MCP_INSTALLER,
-    path.join(packageRoot, "assets", "scripts", "install-into-compositor.sh"),
+    env[overrideEnv],
+    path.join(packageRoot, "assets", "scripts", scriptName),
   ];
   try {
     await fs.access(path.join(repoRoot, "packages", "protocol", "package.json"));
-    candidates.push(path.join(repoRoot, "scripts", "install-into-compositor.sh"));
+    candidates.push(path.join(repoRoot, "scripts", scriptName));
   } catch {
     // Not a monorepo checkout — only bundled assets apply.
   }
@@ -227,12 +272,30 @@ async function configure(args: string[], io: CliIo): Promise<number> {
   }
 
   const directory = configDir(io.env);
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  await fs.chmod(directory, 0o700);
   const file = path.join(directory, "config.json");
-  const body = JSON.stringify({ enabled: true, allowedRoots: roots, auditLogging: true }, null, 2) + "\n";
-  await fs.writeFile(file, body, { encoding: "utf8", mode: 0o600 });
-  await fs.chmod(file, 0o600);
+  // Merge onto the existing config — configure owns allowedRoots only; an
+  // enabled:false or auditLogging:false the user set must survive the rewrite.
+  // Unknown keys ride along so future config fields are not clobbered either.
+  const existing = await readConfigObject(file);
+  const body = JSON.stringify(
+    {
+      ...existing,
+      enabled: typeof existing?.["enabled"] === "boolean" ? existing["enabled"] : true,
+      allowedRoots: roots,
+      auditLogging: typeof existing?.["auditLogging"] === "boolean" ? existing["auditLogging"] : true,
+    },
+    null,
+    2,
+  ) + "\n";
+  try {
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fs.chmod(directory, 0o700);
+    await fs.writeFile(file, body, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(file, 0o600);
+  } catch (error) {
+    io.err(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    return EXIT_SOFTWARE;
+  }
   io.out(`Wrote ${file}`);
   io.out("Restart Compositor to reload the bridge configuration.");
   return 0;

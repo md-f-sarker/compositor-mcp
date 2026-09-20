@@ -10,7 +10,13 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { isJsonObject, type ExecuteRequest, type JsonValue } from "@compositor-mcp/protocol";
+import {
+  CAPABILITY_BY_NAME,
+  isJsonObject,
+  type ExecuteRequest,
+  type JsonValue,
+  type Operation,
+} from "@compositor-mcp/protocol";
 import type { BridgeTransport } from "./bridge-client.js";
 import { CompositorMcpError, normaliseError } from "./errors.js";
 import { handleExecute, handleSearch, inspectRequest, requireDestructiveConfirmation } from "./handlers.js";
@@ -20,15 +26,32 @@ import { PreviewCache, captureLatestPreview, registerCompositorResources } from 
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
 const operationSchema = z.object({
-  name: z.string().min(1),
-  arguments: jsonObjectSchema.optional(),
+  name: z
+    .string()
+    .min(1)
+    .describe("Catalogue operation name, e.g. 'layer.setOpacity'. Discover valid names and their schemas with the search tool."),
+  arguments: jsonObjectSchema
+    .optional()
+    .describe("Operation arguments matching the operation's inputSchema — call search with includeSchemas to fetch it."),
   precondition: z
     .object({
-      projectId: z.string().optional(),
-      documentId: z.string().optional(),
-      revision: z.number().int().nonnegative().optional(),
+      projectId: z
+        .string()
+        .optional()
+        .describe("Expected project id ('current' or a projects[].id from state). Fails with project_conflict when it no longer matches."),
+      documentId: z
+        .string()
+        .optional()
+        .describe("Expected document id (document.id from state). Fails with document_conflict when the open document changed."),
+      revision: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe("Expected editor revision — take it from a state resource read or an execute result's revision field. Fails with revision_conflict on drift."),
     })
-    .optional(),
+    .optional()
+    .describe("Optimistic-concurrency guard checked against the live editor before the operation runs."),
 });
 
 /// Advertised on tools/list and enforced by the SDK: every search hit carries
@@ -37,6 +60,8 @@ const operationSchema = z.object({
 const searchOutputSchema = z.looseObject({
   query: z.string(),
   count: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  truncated: z.boolean(),
   results: z.array(
     z.looseObject({
       score: z.number(),
@@ -85,11 +110,24 @@ const CONFIRM_ELICIT_SCHEMA = z.object({
   confirm: z.boolean().describe("Run the destructive operations now."),
 });
 
+/// Served in the initialize result — the workflow contract a client should
+/// follow: discover operations via search, batch them through execute, and
+/// gate risk behind dryRun and confirmDestructive.
+const SERVER_INSTRUCTIONS =
+  "Compositor is driven through two tools. Call search first to discover operation names, risk classes and input " +
+  "schemas — never guess operation names. Then call execute with a batch of operations; batches are atomic by " +
+  "default and return per-operation results plus a fresh state snapshot and revision. Use dryRun: true to validate " +
+  "a risky batch without mutating. Batches containing destructive operations need confirmDestructive: true (or an " +
+  "accepted confirmation prompt). Pass the returned revision back as an operation precondition to detect editor drift.";
+
 export function createCompositorMcpServer(transport: BridgeTransport): McpServer {
-  const server = new McpServer({
-    name: "compositor-mcp",
-    version: "0.1.0",
-  });
+  const server = new McpServer(
+    {
+      name: "compositor-mcp",
+      version: "0.1.0",
+    },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
   const previews = new PreviewCache();
 
   server.registerTool(
@@ -99,10 +137,10 @@ export function createCompositorMcpServer(transport: BridgeTransport): McpServer
       description:
         "Search Compositor's capability catalogue using natural language. Returns operation names, risk, implementation status and JSON schemas without loading the whole catalogue into context.",
       inputSchema: z.object({
-        query: z.string().default(""),
-        limit: z.number().int().min(1).max(50).default(10),
-        includeSchemas: z.boolean().default(true),
-        includePlanned: z.boolean().default(false),
+        query: z.string().default("").describe("Natural-language or operation-name search text, e.g. 'blur the background'."),
+        limit: z.number().int().min(1).max(50).default(10).describe("Maximum hits to return (1–50); check total/truncated in the result."),
+        includeSchemas: z.boolean().default(true).describe("Include each operation's JSON inputSchema and examples in the results."),
+        includePlanned: z.boolean().default(false).describe("Also list operations that are documented but not yet implemented by the bridge."),
       }),
       outputSchema: searchOutputSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -117,11 +155,29 @@ export function createCompositorMcpServer(transport: BridgeTransport): McpServer
       description:
         "Execute one or more typed Compositor operations. Supports dry-run validation, optimistic preconditions, undo-grouped atomic batches, idempotency keys and explicit confirmation for destructive edits.",
       inputSchema: z.object({
-        operations: z.array(operationSchema).min(1).max(100),
-        atomic: z.boolean().default(true),
-        dryRun: z.boolean().default(false),
-        confirmDestructive: z.boolean().default(false),
-        idempotencyKey: z.string().min(8).max(200).optional(),
+        operations: z
+          .array(operationSchema)
+          .min(1)
+          .max(100)
+          .describe("Operations to run in order — 1 to 100 per batch. Search first to discover names and schemas."),
+        atomic: z
+          .boolean()
+          .default(true)
+          .describe("Roll the whole batch back when one operation fails, as a single undo group. Required unless the batch mixes file/workspace operations."),
+        dryRun: z
+          .boolean()
+          .default(false)
+          .describe("Validate every operation against the live document without mutating — use it for risky or complex batches first."),
+        confirmDestructive: z
+          .boolean()
+          .default(false)
+          .describe("Required to run destructive operations (e.g. layer.delete, pixels.clear); an elicitation-capable client is asked first."),
+        idempotencyKey: z
+          .string()
+          .min(8)
+          .max(200)
+          .optional()
+          .describe("8–200 character key; a retried batch with the same key replays the cached result instead of re-running."),
       }),
       outputSchema: executeOutputSchema,
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -200,7 +256,7 @@ function destructiveConfirmationGate(
       return errorToolResult(error);
     }
 
-    const operations = destructiveOperations(error);
+    const operations = destructiveOperations(error, request);
     return inputRequired({
       inputRequests: {
         confirm: inputRequired.elicit({
@@ -220,13 +276,39 @@ function clientSupportsElicitation(ctx: ServerContext, server: McpServer): boole
   return (perRequest ?? server.server.getClientCapabilities())?.elicitation != null;
 }
 
-function destructiveOperations(error: CompositorMcpError): string {
+/// Compact per-op digest for the confirmation prompt: each destructive op
+/// rendered with the primary identifier it targets — layer.delete(layerId=…),
+/// pixels.clear(path=…), and so on — so the user sees what is about to be
+/// destroyed, not just which verbs run.
+function destructiveOperations(error: CompositorMcpError, request: ExecuteRequest): string {
+  let names: Set<string> | null = null;
   const details = error.details;
   if (isJsonObject(details)) {
-    const names = details["operations"];
-    if (Array.isArray(names) && names.every((name) => typeof name === "string")) return names.join(", ");
+    const listed = details["operations"];
+    if (Array.isArray(listed) && listed.every((name) => typeof name === "string")) {
+      names = new Set(listed as string[]);
+    }
   }
-  return "the requested operations";
+  const digests = new Set<string>();
+  for (const operation of request.operations) {
+    const destructive = names === null
+      ? CAPABILITY_BY_NAME.get(operation.name)?.risk === "destructive"
+      : names.has(operation.name);
+    if (destructive) digests.add(operationDigest(operation));
+  }
+  return digests.size > 0 ? [...digests].join(", ") : "the requested operations";
+}
+
+/// `name(key=value)` using the first recognised identifier argument.
+function operationDigest(operation: Operation): string {
+  const args = operation.arguments;
+  if (isJsonObject(args)) {
+    for (const key of ["layerId", "path", "id", "documentId"] as const) {
+      const value = args[key];
+      if (typeof value === "string" || typeof value === "number") return `${operation.name}(${key}=${value})`;
+    }
+  }
+  return operation.name;
 }
 
 function asToolResult(value: JsonValue, extraContent: ContentBlock[] = []): CallToolResult {

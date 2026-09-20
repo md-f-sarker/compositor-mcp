@@ -214,7 +214,9 @@ extension Dictionary where Key == String, Value == CompositorMCPJSON {
 
 extension CompositorMCPJSON {
     static func int(_ value: Int) -> Self { .number(Double(value)) }
-    static func cgFloat(_ value: CGFloat) -> Self { .number(Double(value)) }
+    /// Non-finite geometry (e.g. `CGRect.null` sentinels) encodes as null rather than
+    /// throwing inside JSONEncoder, which would drop the response on the wire.
+    static func cgFloat(_ value: CGFloat) -> Self { value.isFinite ? .number(Double(value)) : .null }
     static func uuid(_ value: UUID?) -> Self { value.map { .string($0.uuidString) } ?? .null }
 }
 

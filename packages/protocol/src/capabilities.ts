@@ -209,6 +209,14 @@ const grainParameters = object({
   seed: integer("Noise pattern seed.", { minimum: 0, maximum: 4294967295 }),
 });
 
+// filter.apply Grain runs with the filter edit's own random seed — only the
+// adjustment layer honours a caller-supplied one, so the filter schema omits it.
+const grainFilterParameters = object({
+  amount: number("Grain strength, 0–100.", { minimum: 0, maximum: 100 }),
+  size: number("Grain scale in document pixels, 0.5–20.", { minimum: 0.5, maximum: 20 }),
+  roughness: number("Per-pixel noise roughness, 0–100.", { minimum: 0, maximum: 100 }),
+});
+
 const kindConst = (kind: string, description: string): JsonSchema => ({
   type: "string",
   description,
@@ -240,12 +248,15 @@ const FILTER_SETTINGS: ReadonlyArray<readonly [string, JsonSchema]> = [
   ],
   [
     "Add Noise",
-    object({
-      amount: number("Noise strength as a percentage, 0.1–400.", { minimum: 0.1, maximum: 400 }),
-      gaussian: boolean("Gaussian distribution instead of uniform.", false),
-      monochromatic: boolean("Brightness-only noise.", false),
-      seed: integer("Noise pattern seed.", { minimum: 0, maximum: 4294967295 }),
-    }),
+    {
+      ...object({
+        amount: number("Noise strength as a percentage, 0.1–400.", { minimum: 0.1, maximum: 400 }),
+        gaussian: boolean("Gaussian distribution instead of uniform.", false),
+        monochromatic: boolean("Brightness-only noise.", false),
+      }),
+      description:
+        "Add Noise settings. The bridge cannot honour a noise seed here — use the Grain kind's seed when a reproducible pattern matters.",
+    },
   ],
   [
     "Lens Correction",
@@ -272,7 +283,7 @@ const FILTER_SETTINGS: ReadonlyArray<readonly [string, JsonSchema]> = [
   ["Curves", curvesParameters],
   ["Exposure", exposureParameters],
   ["Gradient Map", gradientMapParameters],
-  ["Grain", grainParameters],
+  ["Grain", grainFilterParameters],
 ];
 
 export const CAPABILITIES: readonly Capability[] = [
@@ -422,7 +433,8 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "document.resizeImage",
     title: "Resize image",
-    description: "Resample the whole document to a new pixel size and optional resolution.",
+    description:
+      "Resample the whole document to explicit pixel dimensions and optional resolution. Height is required — there is no proportional auto-height, so compute it from the current aspect ratio when preserving shape.",
     category: "document",
     aliases: ["resample image", "scale image", "change image size"],
     tags: ["image size", "resample"],
@@ -441,6 +453,7 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Crop document",
     description: "Crop or expand the document to an explicit rectangle.",
     category: "document",
+    risk: "destructive",
     aliases: ["crop", "trim canvas"],
     tags: ["crop", "canvas", "bounds"],
     inputSchema: object(
@@ -832,14 +845,14 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Expand selection",
     description: "Grow the selection by a pixel radius.",
     category: "selection",
-    inputSchema: object({ pixels: integer("Expansion in pixels.", { minimum: 1, maximum: 10000 }) }, ["pixels"]),
+    inputSchema: object({ pixels: integer("Expansion in pixels.", { minimum: 1, maximum: 500 }) }, ["pixels"]),
   }),
   capability({
     name: "selection.contract",
     title: "Contract selection",
     description: "Shrink the selection by a pixel radius.",
     category: "selection",
-    inputSchema: object({ pixels: integer("Contraction in pixels.", { minimum: 1, maximum: 10000 }) }, ["pixels"]),
+    inputSchema: object({ pixels: integer("Contraction in pixels.", { minimum: 1, maximum: 500 }) }, ["pixels"]),
   }),
   capability({
     name: "pixels.fill",

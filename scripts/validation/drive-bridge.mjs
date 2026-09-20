@@ -4,6 +4,15 @@
 import { readFileSync } from "node:fs";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// The expected implemented count comes from the built registry — the same
+// source of truth check-capability-parity.mjs uses — so adding a capability
+// never leaves this assertion stale. Run `npm run build:protocol` first.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { CAPABILITIES } = await import(pathToFileURL(path.join(root, "packages/protocol/dist/index.js")).href);
+const EXPECTED_IMPLEMENTED = CAPABILITIES.filter((entry) => entry.status === "implemented").length;
 
 const discovery = JSON.parse(readFileSync(process.env.HOME + "/Library/Application Support/Compositor/MCP/bridge.json", "utf8"));
 const results = [];
@@ -36,7 +45,11 @@ const ping = await request("ping");
 check("ping", ping.ok === true, J(ping.result, 80));
 
 const caps = await request("capabilities");
-check("capabilities implemented=62", caps.ok && caps.result?.implemented?.length === 62, `implemented=${caps.result?.implemented?.length}`);
+check(
+  `capabilities implemented=${EXPECTED_IMPLEMENTED}`,
+  caps.ok && caps.result?.implemented?.length === EXPECTED_IMPLEMENTED,
+  `implemented=${caps.result?.implemented?.length}`,
+);
 
 // wrong-token auth check
 const badResp = await new Promise((resolve) => {
@@ -112,8 +125,10 @@ r = await exec([op("pixels.contentAwareFill", {})]);
 check("pixels.contentAwareFill", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
 r = await exec([op("selection.none", {})]);
 
-// geometry ops
+// geometry ops — crop is destructive: confirm gate first, then the real crop
 r = await exec([op("document.crop", { x: 0, y: 0, width: 300, height: 200 })]);
+check("document.crop requires confirm", r.ok === false && (r.error?.code === "confirmation_required" || JSON.stringify(r).includes("confirmation")), J(r.error ?? r.result));
+r = await exec([op("document.crop", { x: 0, y: 0, width: 300, height: 200 })], { confirmDestructive: true });
 check("document.crop", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
 
 r = await exec([op("document.resizeCanvas", { width: 500, height: 400, anchor: "top-left" })]);
