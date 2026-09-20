@@ -2,6 +2,12 @@
 
 These are arguments to the MCP tools, not raw bridge requests.
 
+Connect the server with `npx -y compositor-mcp` (see
+[`mcp-client-config.json`](mcp-client-config.json) and
+[`codex-config.toml`](codex-config.toml) for client stanzas, including a
+development-checkout variant), then send the arguments below to the `search`
+and `execute` tools.
+
 ## Discover an operation
 
 ```json

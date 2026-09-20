@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest commit on the default branch is supported during the private alpha.
+Only the latest release and the default branch receive security fixes.
 
 ## Reporting
 

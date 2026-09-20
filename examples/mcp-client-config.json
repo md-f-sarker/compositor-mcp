@@ -1,6 +1,10 @@
 {
   "mcpServers": {
     "compositor": {
+      "command": "npx",
+      "args": ["-y", "compositor-mcp"]
+    },
+    "compositor-dev": {
       "command": "node",
       "args": [
         "/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"
