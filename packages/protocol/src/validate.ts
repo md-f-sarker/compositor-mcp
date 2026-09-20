@@ -1,4 +1,4 @@
-import type { JsonObject, JsonSchema, JsonValue } from "./types.js";
+import type { JsonObject, JsonPrimitive, JsonSchema, JsonValue } from "./types.js";
 
 export interface SchemaValidationIssue {
   path: string;
@@ -40,7 +40,7 @@ function validateInto(
       }
     }
     if (matches !== 1) {
-      issues.push({ path, message: `must match exactly one schema (matched ${matches})` });
+      issues.push(...describeOneOfFailure(schema.oneOf, value, path, matches));
       return;
     }
   }
@@ -100,6 +100,60 @@ function validateInto(
       }
     }
   }
+}
+
+/// Translates a failed oneOf into a useful message. When every branch pins the
+/// same property to a different `const` — the catalogue's `kind` discriminator
+/// pattern — a bad or missing discriminator reads as "kind must be one of: …",
+/// and a recognised discriminator whose branch still fails surfaces that
+/// branch's own field-level issues instead of the bare branch count.
+function describeOneOfFailure(
+  branches: JsonSchema[],
+  value: unknown,
+  path: string,
+  matches: number,
+): SchemaValidationIssue[] {
+  const fallback: SchemaValidationIssue = { path, message: `must match exactly one schema (matched ${matches})` };
+  if (matches !== 0 || !isJsonObject(value)) return [fallback];
+
+  const discriminator = constDiscriminator(branches);
+  if (!discriminator) return [fallback];
+
+  const actual = value[discriminator.field];
+  const branch = branches.find(
+    (candidate) => jsonEqual(actual, candidate.properties?.[discriminator.field]?.const as JsonValue),
+  );
+  if (!branch) {
+    const values = discriminator.values.map((item) => String(item)).join(", ");
+    return [{ path: `${path}.${discriminator.field}`, message: `must be one of: ${values}` }];
+  }
+
+  // The discriminator named a real branch, so its issues are the honest answer:
+  // "parameters.radius is not allowed" beats "matched 0 of 6".
+  return validateJsonSchema(branch, value, path);
+}
+
+/// Finds the field every oneOf branch pins to a distinct `const` — the tagged
+/// union's discriminator (e.g. `kind` on adjustment.add and filter.apply).
+/// Returns undefined when no shared const-keyed field exists.
+function constDiscriminator(
+  branches: JsonSchema[],
+): { field: string; values: JsonPrimitive[] } | undefined {
+  const candidates = new Map<string, JsonPrimitive[]>();
+  for (const branch of branches) {
+    for (const [key, property] of Object.entries(branch.properties ?? {})) {
+      if (property.const === undefined) continue;
+      const list = candidates.get(key) ?? [];
+      list.push(property.const);
+      candidates.set(key, list);
+    }
+  }
+  for (const [field, values] of candidates) {
+    if (values.length !== branches.length) continue; // not pinned by every branch
+    if (new Set(values.map((item) => JSON.stringify(item))).size !== values.length) continue; // not distinct
+    return { field, values };
+  }
+  return undefined;
 }
 
 function matchesType(type: string, value: unknown): boolean {

@@ -112,6 +112,18 @@ if (check) {
     process.exit(1);
   }
   console.log(`docs/capabilities.md is up to date (${CAPABILITIES.length} operations).`);
+
+  // The README advertises the implemented count in prose — catch the drift a
+  // registry edit would otherwise leave behind.
+  const readme = await readFile(path.join(root, "README.md"), "utf8");
+  const readmeClaims = [...readme.matchAll(/\b(\d+)\s+(?:catalogued\s+)?operations?\b/g)].map((match) => Number(match[1]));
+  if (!readmeClaims.includes(implemented.length)) {
+    console.error(
+      `README.md does not state the implemented operation count (${implemented.length}); found ${readmeClaims.join(", ") || "none"}.`,
+    );
+    process.exit(1);
+  }
+  console.log(`README.md states the implemented operation count (${implemented.length}).`);
 } else {
   await writeFile(outputPath, content);
   console.log(`Wrote ${path.relative(root, outputPath)} (${CAPABILITIES.length} operations).`);

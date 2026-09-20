@@ -103,6 +103,16 @@ struct CompositorMCPStateBuilder {
     func selection(_ session: EditorSession) -> CompositorMCPJSON {
         guard let selection = session.selection else { return .null }
         let bounds = selection.path.boundingBoxOfPath
+        // An explicit-empty selection (e.g. select-all then invert, or a contract past
+        // the edge) yields CGRect.null with infinite components — encoding those would
+        // throw and drop the whole response, so report the empty shape honestly.
+        guard !selection.path.isEmpty, !bounds.isNull else {
+            return .object([
+                "exists": .bool(false),
+                "antialiased": .bool(selection.antialiased),
+                "bounds": .null
+            ])
+        }
         return .object([
             "exists": .bool(true),
             "antialiased": .bool(selection.antialiased),

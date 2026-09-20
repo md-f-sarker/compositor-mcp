@@ -61,8 +61,14 @@ echo "==> Launching harness"
 "$WORK/bridge-harness" &
 HARNESS_PID=$!
 trap 'kill $HARNESS_PID 2>/dev/null || true' EXIT
-sleep 2
-test -f "$HOME/Library/Application Support/Compositor/MCP/bridge.json" || { echo "discovery file missing" >&2; exit 1; }
+DISCOVERY="$HOME/Library/Application Support/Compositor/MCP/bridge.json"
+rm -f "$DISCOVERY"
+for _ in $(seq 1 50); do
+    test -f "$DISCOVERY" && break
+    kill -0 "$HARNESS_PID" 2>/dev/null || { echo "harness exited before writing discovery" >&2; exit 1; }
+    sleep 0.2
+done
+test -f "$DISCOVERY" || { echo "discovery file missing" >&2; exit 1; }
 
 echo "==> Driving live bridge"
 node "$REPO/scripts/validation/drive-bridge.mjs"

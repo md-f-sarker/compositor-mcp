@@ -3,12 +3,13 @@ import { promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type {
-  BridgeDiscovery,
-  BridgeRequest,
-  BridgeResponse,
-  JsonObject,
-  JsonValue,
+import {
+  isJsonObject,
+  type BridgeDiscovery,
+  type BridgeRequest,
+  type BridgeResponse,
+  type JsonObject,
+  type JsonValue,
 } from "@compositor-mcp/protocol";
 import { CompositorMcpError } from "./errors.js";
 
@@ -52,9 +53,35 @@ function validateDiscovery(value: unknown): BridgeDiscovery {
 }
 
 
+/// Loopback hosts only: the "localhost" alias plus literal IPs — IPv4 inside
+/// 127.0.0.0/8 and the two canonical IPv6 loopback spellings. Anything else
+/// fails net.isIP, which keeps DNS names that merely *start* with "127."
+/// (e.g. "127.0.0.1.evil.com") out, alongside every other hostname.
 function isLoopbackHost(host: string): boolean {
   const normalised = host.trim().toLowerCase();
-  return normalised === "localhost" || normalised === "::1" || normalised === "0:0:0:0:0:0:0:1" || normalised.startsWith("127.");
+  if (normalised === "localhost") return true;
+  if (net.isIP(normalised) === 0) return false;
+  if (normalised === "::1" || normalised === "0:0:0:0:0:0:0:1") return true;
+  const octets = normalised.split(".");
+  return octets.length === 4 && Number(octets[0]) === 127;
+}
+
+/// A discovery file whose pid is dead is stale — the bridge is gone even though
+/// the file lingers. EPERM means the process is alive under another uid (the
+/// file's owner check already gates that case), so only ESRCH fails; anything
+/// else is left alone rather than breaking requests on an exotic platform.
+function assertBridgeProcessAlive(pid: number): void {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      throw new CompositorMcpError(
+        "bridge_not_running",
+        `The Compositor bridge process recorded in the discovery file (pid ${pid}) is no longer running. Start the MCP-enabled Compositor build again.`,
+        { retryable: true },
+      );
+    }
+  }
 }
 
 export class SocketBridgeTransport implements BridgeTransport {
@@ -92,7 +119,9 @@ export class SocketBridgeTransport implements BridgeTransport {
     }
 
     try {
-      return validateDiscovery(JSON.parse(text));
+      const discovery = validateDiscovery(JSON.parse(text));
+      assertBridgeProcessAlive(discovery.pid);
+      return discovery;
     } catch (error) {
       if (error instanceof CompositorMcpError) throw error;
       throw new CompositorMcpError("invalid_bridge_discovery", "Bridge discovery file contains invalid JSON.");
@@ -116,6 +145,17 @@ export class SocketBridgeTransport implements BridgeTransport {
         ...(error.details === undefined ? {} : { details: error.details }),
         ...(error.retryable === undefined ? {} : { retryable: error.retryable }),
       });
+    }
+    // The bridge reports its own pid on ping; a different process answering on
+    // the recorded port means the discovery file is stale and unsafe to trust.
+    if (method === "ping" && isJsonObject(response.result)) {
+      const processId = response.result["processId"];
+      if (typeof processId === "number" && processId !== discovery.pid) {
+        throw new CompositorMcpError(
+          "unsafe_bridge_discovery",
+          `The process answering on ${discovery.host}:${discovery.port} (pid ${processId}) is not the bridge the discovery file recorded (pid ${discovery.pid}); the file is stale.`,
+        );
+      }
     }
     return response.result ?? null;
   }
@@ -159,7 +199,12 @@ export class SocketBridgeTransport implements BridgeTransport {
         finish(() => {
           try {
             const parsed = JSON.parse(line) as BridgeResponse;
-            if (parsed.protocol !== "compositor-bridge/1" || parsed.id !== request.id || typeof parsed.ok !== "boolean") {
+            // Failure responses to requests the bridge could not parse carry id
+            // "unknown" (or none) — accept them so the bridge's own error code
+            // (request_too_large, invalid_json, incomplete_request) reaches the
+            // caller instead of being masked as invalid_bridge_response.
+            const idMatches = parsed.id === request.id || (parsed.ok === false && (parsed.id === "unknown" || parsed.id === undefined));
+            if (parsed.protocol !== "compositor-bridge/1" || !idMatches || typeof parsed.ok !== "boolean") {
               reject(new CompositorMcpError("invalid_bridge_response", "Compositor returned a malformed bridge response."));
               return;
             }

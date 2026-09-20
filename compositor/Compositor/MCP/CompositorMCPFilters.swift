@@ -194,11 +194,16 @@ extension CompositorMCPCommandRouter {
         // beginFilter defers itself behind a pending gradient; settling the gradient first
         // keeps the filter edit synchronous so its absence below means a real refusal.
         if session.gradientEdit != nil { await session.commitGradient() }
-        let previousSettings = session.filterSettings
-        session.filterSettings = settings
         session.brushError = nil
-        session.beginFilter(kind)
-        session.filterSettings = previousSettings
+        // The caller's settings seed the edit the way the options bar's current values do.
+        // The restore is scoped to beginFilter's read alone: commitFilter persists
+        // edit.settings as the new options-bar state on success, as the panel's OK does.
+        do {
+            let previousSettings = session.filterSettings
+            session.filterSettings = settings
+            defer { session.filterSettings = previousSettings }
+            session.beginFilter(kind)
+        }
         guard let edit = session.filterEdit else {
             // A refused begin (guards) leaves no error; a failed FilterEdit init leaves
             // brushError — the same message the app flashes.

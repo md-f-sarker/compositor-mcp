@@ -92,20 +92,30 @@ test("adjustment.add resolves the correct oneOf branch for every kind", async ()
   }
 });
 
-test("adjustment.add rejects parameters from another kind with a named path", async () => {
+test("adjustment.add names the discriminator and valid kinds on a bad kind", async () => {
   const { validateJsonSchema } = await import("../src/index.js");
   const schema = CAPABILITY_BY_NAME.get("adjustment.add")!.inputSchema;
 
+  const unknownKind = validateJsonSchema(schema, { kind: "Imaginary" });
+  assert.equal(unknownKind.length, 1);
+  assert.equal(unknownKind[0]!.path, "$.kind");
+  assert.match(unknownKind[0]!.message, /must be one of: Hue\/Saturation, Levels, Curves, Exposure, Gradient Map, Grain/);
+
+  const missingKind = validateJsonSchema(schema, { parameters: { exposure: 1 } });
+  assert.equal(missingKind[0]!.path, "$.kind");
+  assert.match(missingKind[0]!.message, /must be one of:/);
+});
+
+test("adjustment.add surfaces the matched branch's own issues on cross-kind parameters", async () => {
+  const { validateJsonSchema } = await import("../src/index.js");
+  const schema = CAPABILITY_BY_NAME.get("adjustment.add")!.inputSchema;
+
+  // kind resolves to the Exposure branch, so the honest failure is the stray
+  // parameters field — not "matched 0 of 6".
   const issues = validateJsonSchema(schema, { kind: "Exposure", parameters: { radius: 8 } });
   assert.ok(issues.length > 0, "cross-kind parameters must fail");
-  assert.equal(issues[0]!.path, "$");
-  assert.match(issues[0]!.message, /exactly one/);
-
-  assert.ok(validateJsonSchema(schema, { kind: "Imaginary" }).length > 0, "unknown kind must fail");
-  assert.ok(
-    validateJsonSchema(schema, { parameters: { exposure: 1 } }).length > 0,
-    "missing kind must fail",
-  );
+  assert.equal(issues[0]!.path, "$.parameters.radius");
+  assert.match(issues[0]!.message, /not allowed/);
 });
 
 test("adjustment.update requires a layer id and kind-matched parameters", async () => {
@@ -153,7 +163,11 @@ test("filter.apply validates settings per filter kind", async () => {
     settings: { backgroundQuality: "Advanced" },
   });
   assert.ok(crossKind.length > 0, "cross-kind settings must fail");
-  assert.equal(crossKind[0]!.path, "$");
+  assert.equal(crossKind[0]!.path, "$.settings.backgroundQuality");
+
+  const unknownKind = validateJsonSchema(schema, { kind: "Imaginary" });
+  assert.equal(unknownKind[0]!.path, "$.kind");
+  assert.match(unknownKind[0]!.message, /must be one of: Gaussian Blur, Motion Blur, Add Noise/);
 
   assert.ok(
     validateJsonSchema(schema, { kind: "Remove Background", settings: { radius: 12 } }).length > 0,

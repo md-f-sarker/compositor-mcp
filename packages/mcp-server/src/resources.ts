@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -8,7 +8,7 @@ import {
   type McpServer,
   type ReadResourceResult,
 } from "@modelcontextprotocol/server";
-import { isJsonObject, type JsonObject, type JsonValue } from "@compositor-mcp/protocol";
+import { CAPABILITIES, isJsonObject, type JsonObject, type JsonValue } from "@compositor-mcp/protocol";
 import type { BridgeTransport } from "./bridge-client.js";
 import { CompositorMcpError } from "./errors.js";
 
@@ -80,7 +80,7 @@ export function registerCompositorResources(server: McpServer, transport: Bridge
       description: "The full operation catalogue the connected Compositor build implements — names, risk classes, status and JSON schemas.",
       mimeType: "application/json",
     },
-    async (uri) => jsonContents(uri.href, await bridgeRequest(transport, "capabilities")),
+    async (uri) => jsonContents(uri.href, withCatalogue(await bridgeRequest(transport, "capabilities"))),
   );
 
   server.registerResource(
@@ -134,7 +134,9 @@ async function readPreviewPng(previewPath: string): Promise<Buffer | null> {
   if (!isPreviewPath(previewPath)) return null;
   let handle: fs.FileHandle | undefined;
   try {
-    handle = await fs.open(previewPath, "r");
+    // O_NOFOLLOW refuses a symlink swapped in at the preview path — the fstat
+    // below then always describes the real preview file, never a linked target.
+    handle = await fs.open(previewPath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size > PREVIEW_READ_MAX_BYTES) return null;
     const bytes = await handle.readFile();
@@ -170,8 +172,28 @@ function lastPreviewRender(result: JsonValue): { path: string; width: number | n
   return null;
 }
 
-/// The real bridge reports the open document under `document`; the mock uses
-/// `current`. Both are flattened to { revision, documentId, layers }.
+/// The bridge's capabilities payload only names the implemented operations
+/// ({ protocol, implemented, revision }) — the documented catalogue (names,
+/// titles, risk classes, status, JSON schemas) is the same shared registry the
+/// search tool serves, so it is synthesised here and filtered to the names the
+/// connected build actually reports. A payload without an `implemented` list
+/// falls back to the registry's implemented entries.
+function withCatalogue(payload: JsonValue): JsonValue {
+  const root = asObject(payload);
+  if (!root) return payload;
+  const reported = root["implemented"];
+  const implemented = Array.isArray(reported)
+    ? new Set(reported.filter((name): name is string => typeof name === "string"))
+    : new Set(CAPABILITIES.filter((capability) => capability.status === "implemented").map((capability) => capability.name));
+  return {
+    ...root,
+    catalogue: CAPABILITIES.filter((capability) => implemented.has(capability.name)) as unknown as JsonValue,
+  };
+}
+
+/// The open document rides under `document` on both the real bridge and the
+/// mock; `current` is still tolerated for older mock snapshots. Both are
+/// flattened to { revision, documentId, layers }.
 function layerTree(state: JsonValue): JsonValue {
   const root = asObject(state);
   const document = asObject(root?.["document"]) ?? asObject(root?.["current"]);

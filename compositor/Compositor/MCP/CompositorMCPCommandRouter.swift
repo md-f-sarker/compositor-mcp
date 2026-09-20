@@ -34,7 +34,7 @@ final class CompositorMCPCommandRouter {
         "adjustment.add", "adjustment.update", "filter.apply"
     ]
 
-    private let destructive: Set<String> = ["layer.delete", "layer.merge", "layer.deleteMask", "pixels.clear"]
+    private let destructive: Set<String> = ["document.crop", "layer.delete", "layer.merge", "layer.deleteMask", "pixels.clear"]
     private let nonTransactional: Set<String> = [
         "workspace.select", "document.create", "document.open", "document.save", "document.importImages", "document.export",
         "history.undo", "history.redo", "preview.render"
@@ -45,6 +45,8 @@ final class CompositorMCPCommandRouter {
         self.workspace = workspace
         self.paths = CompositorMCPPathPolicy(workspace: workspace)
     }
+
+    // MARK: - Bridge entry points
 
     func handle(_ request: CompositorMCPBridgeRequest) async -> CompositorMCPBridgeResponse {
         observeChanges()
@@ -75,6 +77,8 @@ final class CompositorMCPCommandRouter {
             return .success(id: request.id, result: result)
         } catch let error as CompositorMCPCommandError {
             return .failure(id: request.id, error: error)
+        } catch let error as DecodingError {
+            return .failure(id: request.id, error: .init(code: "invalid_request", message: error.localizedDescription))
         } catch {
             return .failure(id: request.id, error: .init(code: "internal_error", message: error.localizedDescription))
         }
@@ -94,9 +98,15 @@ final class CompositorMCPCommandRouter {
         CompositorMCPStateBuilder(workspace: workspace, revision: revision).snapshot(includeLayers: includeLayers)
     }
 
+    // MARK: - Execute pipeline
+
     private func execute(_ request: CompositorMCPExecuteRequest, requestId: String) async throws -> CompositorMCPJSON {
-        guard !request.operations.isEmpty else { throw CompositorMCPCommandError.invalid("At least one operation is required.") }
-        guard request.operations.count <= 100 else { throw CompositorMCPCommandError.invalid("A batch may contain at most 100 operations.") }
+        guard !request.operations.isEmpty else {
+            throw CompositorMCPCommandError(code: "invalid_request", message: "At least one operation is required.")
+        }
+        guard request.operations.count <= 100 else {
+            throw CompositorMCPCommandError(code: "too_many_operations", message: "A batch may contain at most 100 operations.")
+        }
 
         let requestFingerprint: String?
         if let key = request.idempotencyKey {
@@ -181,9 +191,16 @@ final class CompositorMCPCommandRouter {
         var auditEntries: [(operation: String, ok: Bool, details: [String: CompositorMCPJSON])] = []
         var failed = false
         var mutated = false
+        var undidFailedOperation = false
 
         for (index, operation) in request.operations.enumerated() {
+            // apply() re-resolves workspace.current per operation, and workspace.select /
+            // document.open / document.create can move the active document mid-batch, so the
+            // session and the per-op precondition check must both be re-evaluated here.
+            let operationSession = workspace.current.session
+            let undoCountBeforeOperation = operationSession.history.undoCount
             do {
+                try checkPrecondition(operation.precondition)
                 let outcome = try await apply(operation)
                 mutated = mutated || outcome.mutated
                 operationResults.append(.object([
@@ -201,6 +218,9 @@ final class CompositorMCPCommandRouter {
                 ]))
                 auditEntries.append((operation.name, false,
                     ["code": .string(error.code), "message": .string(error.message)]))
+                undidFailedOperation = undidFailedOperation
+                    || rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
+                                               grouped: shouldGroupUndo)
                 if atomic { break }
             } catch {
                 failed = true
@@ -210,18 +230,26 @@ final class CompositorMCPCommandRouter {
                 ]))
                 auditEntries.append((operation.name, false,
                     ["code": .string("internal_error"), "message": .string(error.localizedDescription)]))
+                undidFailedOperation = undidFailedOperation
+                    || rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
+                                               grouped: shouldGroupUndo)
                 if atomic { break }
             }
         }
         await audit(requestId: requestId, entries: auditEntries)
 
-        var rolledBack = false
+        var rolledBack = undidFailedOperation
         if shouldGroupUndo {
             session.endEdit()
-            if failed, session.history.undoCount > undoCountBefore, session.canUndo {
-                session.undo()
-                rolledBack = true
-                mutated = false
+            if failed, session.history.undoCount > undoCountBefore {
+                // session.undo() spends its first call discarding a pending gradient;
+                // settle it so the entry that reverts is the grouped batch itself.
+                if session.gradientEdit != nil { session.cancelGradient() }
+                while session.history.undoCount > undoCountBefore, session.canUndo {
+                    session.undo()
+                    rolledBack = true
+                }
+                if rolledBack { mutated = false }
             }
         }
         if failed, atomic {
@@ -248,6 +276,20 @@ final class CompositorMCPCommandRouter {
         return result
     }
 
+    /// Geometry ops replace the document outright. A pending transform, crop, gradient,
+    /// lasso draft or selection move would otherwise commit against the resized document
+    /// — or, for `document.crop`, be silently overwritten by the new crop rect. Refuse
+    /// rather than settle implicitly: the client cannot see the UI edit it would discard.
+    private func requireSettledDocument(_ session: EditorSession) throws {
+        guard session.canEditLayers, session.lassoDraft == nil, session.selectionMoveOrigin == nil else {
+            throw CompositorMCPCommandError(
+                code: "pending_edit",
+                message: "A transform, crop, gradient, filter, lasso or selection move is still in progress; commit or cancel it first.",
+                retryable: true
+            )
+        }
+    }
+
     private func checkPrecondition(_ value: CompositorMCPPrecondition?) throws {
         guard let value else { return }
         if let expected = value.revision, expected != revision {
@@ -264,15 +306,37 @@ final class CompositorMCPCommandRouter {
         }
     }
 
+    /// Per-operation rollback for batches without an undo group: a transactional op that
+    /// mutates and then throws (e.g. `layer.group` renaming the previous active layer after
+    /// a refused group, or `document.importImages` failing mid-batch) must not leave its
+    /// committed edits behind while reporting ok:false. Grouped batches roll back once via
+    /// the outer "MCP Batch" transaction, so this runs only when that path does not.
+    @discardableResult
+    private func rollbackFailedOperation(on session: EditorSession, undoCountBefore: Int, grouped: Bool) -> Bool {
+        guard !grouped else { return false }
+        var rolledBack = false
+        // Each undo pops one committed entry (a pending gradient is discarded first, as
+        // upstream's Undo behaves); loop so an op that pushed several entries fully reverts.
+        while session.history.undoCount > undoCountBefore, session.canUndo {
+            session.undo()
+            rolledBack = true
+        }
+        return rolledBack
+    }
+
+    // MARK: - Operation validation
+
     private func validate(_ operation: CompositorMCPOperation) throws {
         let arguments = operation.arguments ?? [:]
         let session = workspace.current.session
 
         switch operation.name {
+        // MARK: Reads
         case "app.ping", "workspace.list", "selection.get":
             break
         case "app.getState":
             _ = try arguments.optionalBool("includeLayers")
+        // MARK: Workspace and documents
         case "workspace.select":
             _ = try resolveProject(arguments.requiredString("projectId"))
         case "document.create":
@@ -300,7 +364,7 @@ final class CompositorMCPCommandRouter {
         case "document.export":
             _ = try paths.authorise(arguments.requiredString("path"), forWrite: true)
             let format = (try arguments.optionalString("format") ?? "png").lowercased()
-            guard format == "png" || format == "jpeg" || format == "jpg" else {
+            guard format == "png" || format == "jpeg" else {
                 throw CompositorMCPCommandError.invalid("format must be png or jpeg.")
             }
             if let quality = try arguments.optionalDouble("quality"), !(0...1).contains(quality) {
@@ -319,6 +383,7 @@ final class CompositorMCPCommandRouter {
             let anchor = try arguments.optionalString("anchor") ?? "centre"
             guard canvasAnchor(anchor) != nil else { throw CompositorMCPCommandError.invalid("Unknown anchor: \(anchor)") }
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            try requireSettledDocument(session)
         case "document.resizeImage":
             let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
             guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
@@ -328,24 +393,30 @@ final class CompositorMCPCommandRouter {
                 throw CompositorMCPCommandError.invalid("resolution must be between 1 and 2,400 DPI.")
             }
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            try requireSettledDocument(session)
         case "document.crop":
             let rect = try requireCropRect(arguments)
             guard CropGeometry.valid(rect) else {
                 throw CompositorMCPCommandError.invalid("The crop rectangle is outside Compositor's limits.")
             }
             guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            try requireSettledDocument(session)
             guard rect.intersects(CGRect(origin: .zero, size: document.size)) else {
                 throw CompositorMCPCommandError.invalid("The crop rectangle does not intersect the canvas.")
             }
+        // MARK: History
         case "history.undo":
             guard session.canUndo else { throw CompositorMCPCommandError(code: "undo_unavailable", message: "Nothing can be undone.") }
         case "history.redo":
             guard session.canRedo else { throw CompositorMCPCommandError(code: "redo_unavailable", message: "Nothing can be redone.") }
+        // MARK: Layers
         case "layer.list":
             if let requested = try arguments.optionalString("projectId") { _ = try resolveProject(requested) }
         case "layer.select":
             let values = try arguments.requiredStrings("layerIds")
-            guard !values.isEmpty else { throw CompositorMCPCommandError.invalid("layerIds must not be empty.") }
+            guard (1...100).contains(values.count) else {
+                throw CompositorMCPCommandError.invalid("layerIds must contain between 1 and 100 ids.")
+            }
             let ids = try values.map { try resolveLayer($0, session: session) }
             for id in ids where session.document?.layers.contains(where: { $0.id == id }) != true {
                 throw CompositorMCPCommandError.notFound("Layer not found: \(id.uuidString)")
@@ -367,7 +438,8 @@ final class CompositorMCPCommandRouter {
             guard !layer.isGroup, session.canEditLayers else { throw CompositorMCPCommandError(code: "duplicate_unavailable", message: "The selected layer cannot be duplicated.") }
         case "layer.rename":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
-            _ = try arguments.requiredString("name")
+            let name = try arguments.requiredString("name")
+            guard name.count <= 200 else { throw CompositorMCPCommandError.invalid("name must be at most 200 characters.") }
             try requireLayer(id, session: session)
         case "layer.delete":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
@@ -403,6 +475,7 @@ final class CompositorMCPCommandRouter {
             let offset = try arguments.requiredInt("offset")
             guard (-1000...1000).contains(offset) else { throw CompositorMCPCommandError.invalid("offset must be between -1,000 and 1,000.") }
             try requireLayer(id, session: session)
+        // MARK: Layer groups
         case "layer.group":
             _ = try arguments.optionalString("name")
             guard !session.selectedLayerIDs.isEmpty, session.canEditLayers else {
@@ -422,14 +495,19 @@ final class CompositorMCPCommandRouter {
             } else if !session.canMergeLayers {
                 throw CompositorMCPCommandError(code: "merge_unavailable", message: "The current layer selection cannot be merged.")
             }
+        // MARK: Layer transforms
         case "layer.flip":
             try validateAxis(arguments.requiredString("axis"))
             guard session.canTransform else { throw CompositorMCPCommandError(code: "transform_unavailable", message: "The selected layer or group cannot be transformed.") }
         case "layer.transform":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             try requireLayer(id, session: session)
-            if let width = try arguments.optionalDouble("width"), width <= 0 { throw CompositorMCPCommandError.invalid("width must be greater than 0.") }
-            if let height = try arguments.optionalDouble("height"), height <= 0 { throw CompositorMCPCommandError.invalid("height must be greater than 0.") }
+            if let width = try arguments.optionalDouble("width"), !(1...300_000).contains(width) {
+                throw CompositorMCPCommandError.invalid("width must be between 1 and 300,000 pixels.")
+            }
+            if let height = try arguments.optionalDouble("height"), !(1...300_000).contains(height) {
+                throw CompositorMCPCommandError.invalid("height must be between 1 and 300,000 pixels.")
+            }
             _ = try arguments.optionalDouble("x"); _ = try arguments.optionalDouble("y"); _ = try arguments.optionalDouble("rotation")
             _ = try arguments.optionalBool("flipX"); _ = try arguments.optionalBool("flipY")
             if let requested = try arguments.optionalString("sampling"), LayerSampling.matching(requested) == nil {
@@ -439,6 +517,7 @@ final class CompositorMCPCommandRouter {
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             try requireLayer(id, session: session)
             _ = try requireDistortCorners(arguments)
+        // MARK: Layer masks
         case "layer.addMask":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             let mode = try arguments.optionalString("mode") ?? "reveal"
@@ -471,6 +550,7 @@ final class CompositorMCPCommandRouter {
             guard session.canEditLayers else {
                 throw CompositorMCPCommandError(code: "mask_edit_unavailable", message: "The mask cannot be edited while another edit is active.")
             }
+        // MARK: Selection
         case "selection.all":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
         case "selection.none":
@@ -511,6 +591,11 @@ final class CompositorMCPCommandRouter {
             }
             _ = try requireSelectionMode(arguments)
             guard let document = session.document else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            // The wand flood-fill allocates per-pixel masks; refuse canvases beyond the
+            // pixel budget upstream already applies to shape rasterisation.
+            guard Int(document.size.width) * Int(document.size.height) <= EditorSession.maxShapePixels else {
+                throw CompositorMCPCommandError.invalid("The canvas is too large for the magic wand.")
+            }
             // The wand tool silently ignores clicks outside the canvas; through MCP that is
             // reported as invalid input because such a point can never produce a selection.
             guard point.x >= 0, point.y >= 0, point.x < document.size.width, point.y < document.size.height else {
@@ -521,8 +606,10 @@ final class CompositorMCPCommandRouter {
             }
         case "selection.expand", "selection.contract":
             let pixels = try arguments.requiredInt("pixels")
-            guard (1...10_000).contains(pixels) else { throw CompositorMCPCommandError.invalid("pixels must be between 1 and 10,000.") }
+            // resizeSelection silently ignores |delta| > 500, so accept only what upstream applies.
+            guard (1...500).contains(pixels) else { throw CompositorMCPCommandError.invalid("pixels must be between 1 and 500.") }
             guard session.selection != nil, session.canModifySelection else { throw CompositorMCPCommandError(code: "selection_required", message: "No editable selection exists.") }
+        // MARK: Pixels and preview
         case "pixels.fill":
             let target = try arguments.optionalString("target") ?? "foreground"
             guard target == "foreground" || target == "background" else { throw CompositorMCPCommandError.invalid("target must be foreground or background.") }
@@ -533,6 +620,7 @@ final class CompositorMCPCommandRouter {
             guard session.canInvert else { throw CompositorMCPCommandError(code: "pixel_edit_unavailable", message: "The active layer or mask cannot be inverted.") }
         case "preview.render":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+        // MARK: Paint and filters
         case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
             try validatePaint(operation.name, arguments: arguments, session: session)
         case "adjustment.add", "adjustment.update", "filter.apply", "pixels.contentAwareFill":
@@ -541,6 +629,8 @@ final class CompositorMCPCommandRouter {
             throw CompositorMCPCommandError(code: "operation_not_implemented", message: "\(operation.name) is not implemented.")
         }
     }
+
+    // MARK: - Validation helpers
 
     /// Internal rather than private so CompositorMCPFilters.swift can resolve targets.
     @discardableResult
@@ -628,6 +718,8 @@ final class CompositorMCPCommandRouter {
         WandSampleSize.matching(value, by: \.title)
     }
 
+    // MARK: - Apply dispatch
+
     /// Shared marquee/lasso apply: the shape is clipped to the canvas and combined with the
     /// current selection through `applySelection`, as `finishLasso` does. An outline whose
     /// clipped area is empty selects nothing — in New mode it deselects — so no explicit
@@ -659,6 +751,7 @@ final class CompositorMCPCommandRouter {
         let session = workspace.current.session
 
         switch operation.name {
+        // MARK: Reads
         case "app.ping":
             return Outcome(value: ping(), mutated: false)
         case "app.getState":
@@ -680,6 +773,7 @@ final class CompositorMCPCommandRouter {
             ]), mutated: false)
         case "selection.get":
             return selectionOutcome(session, mutated: false)
+        // MARK: Workspace and documents
         case "workspace.select":
             let tab = try resolveProject(arguments.requiredString("projectId"))
             guard workspace.canSwitch || tab.id == workspace.selectedID else { throw CompositorMCPCommandError.busy("The current project cannot be switched while an edit is active.") }
@@ -735,7 +829,7 @@ final class CompositorMCPCommandRouter {
             switch format {
             case "png":
                 try await ImageExporter.shared.exportPNG(snapshot, to: destination)
-            case "jpeg", "jpg":
+            case "jpeg":
                 let raster = try await ImageExporter.shared.render(snapshot)
                 var options = JPEGOptions()
                 options.quality = min(1, max(0, try arguments.optionalDouble("quality") ?? 0.85))
@@ -760,6 +854,7 @@ final class CompositorMCPCommandRouter {
             let width = Int(try arguments.requiredDouble("width").rounded())
             let height = Int(try arguments.requiredDouble("height").rounded())
             guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            try requireSettledDocument(session)
             session.isProjectBusy = true
             defer { session.isProjectBusy = false }
             do {
@@ -767,7 +862,7 @@ final class CompositorMCPCommandRouter {
                     to: CanvasSizeOptions(width: width, height: height, anchor: anchorIndex))
                 session.applyDocumentSize(resized, actionName: "Canvas Size")
             } catch {
-                throw CompositorMCPCommandError.invalid(error.localizedDescription)
+                throw CompositorMCPCommandError(code: "resize_failed", message: error.localizedDescription)
             }
             return Outcome(value: .object([
                 "documentId": .uuid(session.document?.id),
@@ -780,6 +875,7 @@ final class CompositorMCPCommandRouter {
             let height = Int(try arguments.requiredDouble("height").rounded())
             guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
             let resolution = try arguments.optionalDouble("resolution") ?? snapshot.manifest.resolution ?? 72
+            try requireSettledDocument(session)
             session.isProjectBusy = true
             defer { session.isProjectBusy = false }
             do {
@@ -787,7 +883,7 @@ final class CompositorMCPCommandRouter {
                     to: ImageSizeOptions(width: width, height: height, resolution: resolution))
                 session.applyImageSize(resized)
             } catch {
-                throw CompositorMCPCommandError.invalid(error.localizedDescription)
+                throw CompositorMCPCommandError(code: "resize_failed", message: error.localizedDescription)
             }
             return Outcome(value: .object([
                 "documentId": .uuid(session.document?.id),
@@ -804,6 +900,9 @@ final class CompositorMCPCommandRouter {
             guard rect.intersects(CGRect(origin: .zero, size: document.size)) else {
                 throw CompositorMCPCommandError.invalid("The crop rectangle does not intersect the canvas.")
             }
+            // Re-check at apply time: another op in the same batch may have left a
+            // pending edit (including a crop rect) after this op was validated.
+            try requireSettledDocument(session)
             session.cropError = nil
             session.cropRect = rect
             await session.commitCrop()
@@ -821,6 +920,7 @@ final class CompositorMCPCommandRouter {
                 "x": .number(rect.minX), "y": .number(rect.minY),
                 "width": .int(cropped.width), "height": .int(cropped.height)
             ]), mutated: true)
+        // MARK: History
         case "history.undo":
             guard session.canUndo else { throw CompositorMCPCommandError(code: "undo_unavailable", message: "Nothing can be undone.") }
             session.undo()
@@ -829,6 +929,7 @@ final class CompositorMCPCommandRouter {
             guard session.canRedo else { throw CompositorMCPCommandError(code: "redo_unavailable", message: "Nothing can be redone.") }
             session.redo()
             return Outcome(value: .object(["redone": .bool(true)]), mutated: true)
+        // MARK: Layers
         case "layer.select":
             let ids = try arguments.requiredStrings("layerIds").map { try resolveLayer($0, session: session) }
             for id in ids where session.document?.layers.contains(where: { $0.id == id }) != true {
@@ -839,15 +940,19 @@ final class CompositorMCPCommandRouter {
             let nextActive = ids.last
             let nextMaskTarget = target == "mask"
             let changed = session.activeLayerID != nextActive || session.selectedLayerIDs != nextSelected || session.isMaskSelected != nextMaskTarget
-            session.activeLayerID = nextActive
+            // Go through selectLayer so switching the active layer commits a pending
+            // transform or gradient instead of leaving it attached to the old layer.
+            session.selectLayer(nextActive)
             session.selectedLayerIDs = nextSelected
             session.isMaskSelected = nextMaskTarget
             return Outcome(value: .object(["selectedLayerIds": .array(ids.map { .string($0.uuidString) })]), mutated: changed)
         case "layer.addBlank":
             guard session.document != nil, session.canEditLayers else { throw CompositorMCPCommandError(code: "document_required", message: "Open or create an editable document first.") }
+            // Argument reads stay outside the edit so a throw can never strand a pending one.
+            let name = try arguments.optionalString("name")
             session.beginEdit("Add Layer")
             session.addBlankLayer()
-            if let name = try arguments.optionalString("name"), !name.isEmpty, let id = session.activeLayerID,
+            if let name = name, !name.isEmpty, let id = session.activeLayerID,
                let index = session.document?.layers.firstIndex(where: { $0.id == id }) {
                 session.document?.layers[index].name = name
             }
@@ -935,16 +1040,24 @@ final class CompositorMCPCommandRouter {
                 "requestedOffset": .int(offset),
                 "appliedOffset": .int(moved)
             ]), mutated: moved != 0)
+        // MARK: Layer groups
         case "layer.group":
             guard session.selectedLayerIDs.count > 0 else { throw CompositorMCPCommandError(code: "layer_required", message: "Select at least one layer first.") }
+            // Read before beginEdit so a throw cannot strand a pending edit.
+            let name = try arguments.optionalString("name")
+            let previousActive = session.activeLayerID
             session.beginEdit("Group Layers")
             session.groupSelectedLayers()
-            if let name = try arguments.optionalString("name"), !name.isEmpty, let id = session.activeLayerID,
+            // groupSelectedLayers() refuses silently at the layer cap or on an invalid
+            // hierarchy; only a newly created (freshly activated) group takes the name —
+            // otherwise the write would land on whatever layer was active before.
+            if let name = name, !name.isEmpty, session.activeLayer?.isGroup == true,
+               let id = session.activeLayerID, id != previousActive,
                let index = session.document?.layers.firstIndex(where: { $0.id == id }) {
                 session.document?.layers[index].name = name
             }
             session.endEdit()
-            guard session.activeLayer?.isGroup == true else {
+            guard session.activeLayer?.isGroup == true, session.activeLayerID != previousActive else {
                 throw CompositorMCPCommandError(code: "group_failed", message: "The selected layers could not be grouped.")
             }
             return Outcome(value: layerValue(session.activeLayer), mutated: true)
@@ -968,13 +1081,35 @@ final class CompositorMCPCommandRouter {
             var children = layers.filter { $0.parentID == id }
             for index in children.indices { children[index].parentID = parent }
             layers.removeAll { $0.id == id || $0.parentID == id }
-            var insertion = layers.count
+            let positions = Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($0.element.id, $0.offset) })
+            let childrenByParent = Dictionary(grouping: layers, by: \.parentID)
+            /// Flat index just past a layer's whole subtree. Descendants are not contiguous
+            /// upstream — grouping appends them at the array end — so the subtree is walked.
+            func subtreeEnd(_ root: UUID) -> Int {
+                var end = (positions[root] ?? -1) + 1
+                var pending = [root]
+                while let next = pending.popLast() {
+                    for child in childrenByParent[next] ?? [] {
+                        end = max(end, (positions[child.id] ?? -1) + 1)
+                        pending.append(child.id)
+                    }
+                }
+                return end
+            }
+            var insertion: Int?
             var seen = 0
             for (index, layer) in layers.enumerated() where layer.parentID == parent {
                 if seen == rank { insertion = index; break }
                 seen += 1
             }
-            layers.insert(contentsOf: children, at: insertion)
+            // When the dissolved group was its parent's last sibling the loop finds no rank
+            // slot; the children still take the group's place at the end of the parent's
+            // subtree — just past the last remaining sibling's subtree — rather than the
+            // array end, where unrelated content may sit.
+            let insertionPoint = insertion
+                ?? layers.lastIndex(where: { $0.parentID == parent }).map { subtreeEnd(layers[$0].id) }
+                ?? (parent.flatMap { positions[$0].map { $0 + 1 } } ?? layers.count)
+            layers.insert(contentsOf: children, at: insertionPoint)
             for child in children { EditorSession.adoptClipping(child.id, in: &layers) }
             EditorSession.releaseDetachedClipping(in: &layers)
             guard (try? LayerHierarchy.validate(layers.map(\.hierarchyRecord))) != nil else {
@@ -998,6 +1133,7 @@ final class CompositorMCPCommandRouter {
             guard session.canMergeLayers else { throw CompositorMCPCommandError(code: "merge_unavailable", message: "The current layer selection cannot be merged.") }
             session.mergeLayers()
             return Outcome(value: layerValue(session.activeLayer), mutated: true)
+        // MARK: Layer transforms
         case "layer.flip":
             guard session.canTransform else { throw CompositorMCPCommandError(code: "transform_unavailable", message: "The selected layer or group cannot be transformed.") }
             let axis = try arguments.requiredString("axis")
@@ -1009,7 +1145,10 @@ final class CompositorMCPCommandRouter {
             session.selectLayer(id)
             session.isMaskSelected = false
             session.beginTransform(persistent: false)
-            guard var transform = session.transformEdit?.draft else { throw CompositorMCPCommandError(code: "transform_unavailable", message: "The layer cannot be transformed.") }
+            guard var transform = session.transformEdit?.draft else {
+                session.cancelTransform()
+                throw CompositorMCPCommandError(code: "transform_unavailable", message: "The layer cannot be transformed.")
+            }
             if let value = try arguments.optionalDouble("x") { transform.origin.x = CGFloat(value) }
             if let value = try arguments.optionalDouble("y") { transform.origin.y = CGFloat(value) }
             if let value = try arguments.optionalDouble("width") { transform.size.width = CGFloat(value) }
@@ -1043,9 +1182,15 @@ final class CompositorMCPCommandRouter {
                 session.cancelTransform()
                 throw CompositorMCPCommandError(code: "transform_unavailable", message: "The selected layer or group cannot be distorted.")
             }
+            session.brushError = nil
             session.previewCorners(corners)
             session.commitTransform()
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "distort_failed", message: message)
+            }
             return Outcome(value: layerValue(session.activeLayer), mutated: true)
+        // MARK: Layer masks
         case "layer.addMask":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             session.selectLayer(id)
@@ -1124,27 +1269,34 @@ final class CompositorMCPCommandRouter {
             return Outcome(value: .object([
                 "layerId": .string(id.uuidString), "radius": .number(radius), "hasMask": .bool(true)
             ]), mutated: changed)
+        // MARK: Selection
         case "selection.all":
             guard session.document != nil else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
+            // setSelection skips a no-op write, so the undo count is the mutation signal.
+            let selectAllBefore = session.history.undoCount
             session.selectAll()
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > selectAllBefore)
         case "selection.none":
+            let deselectBefore = session.history.undoCount
             session.deselect()
-            return Outcome(value: .null, mutated: true)
+            return Outcome(value: .null, mutated: session.history.undoCount > deselectBefore)
         case "selection.invert":
             guard session.selection != nil, session.canEditSelection else { throw CompositorMCPCommandError(code: "selection_required", message: "No editable selection exists.") }
+            let invertBefore = session.history.undoCount
             session.invertSelection()
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > invertBefore)
         case "selection.fromLayer":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             guard session.document?.layers.first(where: { $0.id == id })?.asset != nil else { throw CompositorMCPCommandError.notFound("Layer pixels not found.") }
+            let fromLayerBefore = session.history.undoCount
             session.loadLayerSelection(layerID: id)
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > fromLayerBefore)
         case "selection.fromMask":
             let id = try resolveLayer(arguments.requiredString("layerId"), session: session)
             guard session.document?.layers.first(where: { $0.id == id })?.mask != nil else { throw CompositorMCPCommandError.notFound("Layer mask not found.") }
+            let fromMaskBefore = session.history.undoCount
             session.loadMaskSelection(layerID: id)
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > fromMaskBefore)
         case "selection.rectangle":
             let rect = try requireSelectionRect(arguments)
             let mode = try requireSelectionMode(arguments)
@@ -1183,40 +1335,68 @@ final class CompositorMCPCommandRouter {
                 settings.sampleSize = size
             }
             session.wandSettings = settings
+            defer { session.wandSettings = previousSettings }
             session.brushError = nil
+            let wandBefore = session.history.undoCount
             await session.magicWand(at: point, mode: mode)
-            session.wandSettings = previousSettings
             if let message = session.brushError {
                 session.brushError = nil
                 throw CompositorMCPCommandError(code: "wand_failed", message: message)
             }
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > wandBefore)
         case "selection.expand":
             guard session.selection != nil, session.canModifySelection else { throw CompositorMCPCommandError(code: "selection_required", message: "No editable selection exists.") }
+            let expandBefore = session.history.undoCount
             session.expandSelection(by: try arguments.requiredInt("pixels"))
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > expandBefore)
         case "selection.contract":
             guard session.selection != nil, session.canModifySelection else { throw CompositorMCPCommandError(code: "selection_required", message: "No editable selection exists.") }
+            let contractBefore = session.history.undoCount
             session.contractSelection(by: try arguments.requiredInt("pixels"))
-            return selectionOutcome(session, mutated: true)
+            return selectionOutcome(session, mutated: session.history.undoCount > contractBefore)
+        // MARK: Pixels
         case "pixels.fill":
             guard session.canEditPixels else { throw CompositorMCPCommandError(code: "pixel_edit_unavailable", message: "The active layer or mask cannot be filled.") }
             let target = try arguments.optionalString("target") ?? "foreground"
             guard target == "foreground" || target == "background" else { throw CompositorMCPCommandError.invalid("target must be foreground or background.") }
+            // Fill, clear and invert report through brushError — the same channel the
+            // canvas flashes — rather than throwing. A fill that covers nothing commits
+            // no undo entry upstream, so `mutated` tracks whether history actually grew.
+            let undoCount = session.history.undoCount
+            session.brushError = nil
             await session.fillSelection(with: target == "background" ? .background : .foreground)
-            return Outcome(value: .object(["filled": .bool(true), "target": .string(target)]), mutated: true)
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "fill_failed", message: message)
+            }
+            return Outcome(value: .object(["filled": .bool(true), "target": .string(target)]),
+                           mutated: session.history.undoCount > undoCount)
         case "pixels.clear":
             guard session.selection != nil, session.canEditPixels else { throw CompositorMCPCommandError(code: "selection_required", message: "Clearing pixels requires an editable selection.") }
+            let undoCount = session.history.undoCount
+            session.brushError = nil
             await session.clearSelectedPixels()
-            return Outcome(value: .object(["cleared": .bool(true)]), mutated: true)
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "clear_failed", message: message)
+            }
+            return Outcome(value: .object(["cleared": .bool(true)]), mutated: session.history.undoCount > undoCount)
         case "pixels.invert":
             guard session.canInvert else { throw CompositorMCPCommandError(code: "pixel_edit_unavailable", message: "The active layer or mask cannot be inverted.") }
+            let undoCount = session.history.undoCount
+            session.brushError = nil
             await session.invertPixels()
-            return Outcome(value: .object(["inverted": .bool(true)]), mutated: true)
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "invert_failed", message: message)
+            }
+            return Outcome(value: .object(["inverted": .bool(true)]), mutated: session.history.undoCount > undoCount)
+        // MARK: Paint and filters
         case "paint.brushStroke", "paint.spotHeal", "paint.clone", "paint.blur", "paint.gradient", "paint.shape":
             return try await applyPaint(operation.name, arguments: arguments, session: session)
         case "adjustment.add", "adjustment.update", "filter.apply", "pixels.contentAwareFill":
             return try await applyFilterAndAdjustment(operation.name, arguments: arguments, session: session)
+        // MARK: Preview
         case "preview.render":
             guard let snapshot = session.projectSnapshot() else { throw CompositorMCPCommandError(code: "document_required", message: "No document is open.") }
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Compositor-MCP", isDirectory: true)
@@ -1236,6 +1416,8 @@ final class CompositorMCPCommandRouter {
             throw CompositorMCPCommandError(code: "operation_not_implemented", message: "\(operation.name) is not implemented.")
         }
     }
+
+    // MARK: - Apply helpers
 
     private func cleanupPreviewFiles(in directory: URL) {
         let manager = FileManager.default
@@ -1282,6 +1464,8 @@ final class CompositorMCPCommandRouter {
         Outcome(value: CompositorMCPStateBuilder(workspace: workspace, revision: revision).selection(session), mutated: mutated)
     }
 
+    // MARK: - Audit
+
     /// One execute call's audit records, flushed in a single append so the log does
     /// not open/seek/write/close once per operation.
     private func audit(requestId: String,
@@ -1289,6 +1473,8 @@ final class CompositorMCPCommandRouter {
         guard paths.configuration.auditLogging, !entries.isEmpty else { return }
         await CompositorMCPAuditLog.shared.append(requestId: requestId, entries: entries)
     }
+
+    // MARK: - Revision tracking
 
     /// Keeps optimistic preconditions aware of both MCP edits and edits made directly in the app.
     /// The fingerprint deliberately includes image identities so committed paint/filter changes are observed.
@@ -1350,6 +1536,8 @@ final class CompositorMCPCommandRouter {
         }
         return values.joined(separator: "|")
     }
+
+    // MARK: - Decoding and idempotency
 
     /// Internal rather than private so CompositorMCPPaint.swift's `paintColorValue` shares it.
     func parseHex(_ value: String, argument: String) throws -> (CGFloat, CGFloat, CGFloat) {

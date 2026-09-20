@@ -23,6 +23,13 @@ Compositor MCP is designed around five constraints:
 - `search(query, limit, includeSchemas, includePlanned)`
 - `execute(operations, atomic, dryRun, confirmDestructive, idempotencyKey)`
 
+Both tools declare `outputSchema`s and return `structuredContent` alongside text, so typed clients can consume results without parsing prose. Beyond the tools, the server also serves:
+
+- **Resources** — `compositor://state`, `compositor://layers`, `compositor://capabilities` and `compositor://preview/latest` give clients a read-only window onto editor state without paying for an `execute` round trip. The capabilities resource synthesises the catalogue server-side, filtered to the bridge's implemented list, so a stale app build can never over-advertise.
+- **Prompts** — four workflow recipes (`export-for-web`, `subject-cutout`, `retouch-pass`, `batch-variant`) that expand into step-by-step guidance naming only implemented operations.
+- **Elicitation** — clients advertising the capability get a one-shot `confirm` prompt for destructive batches; declining or cancelling fails the call with `confirmation_declined`. `confirmDestructive: true` remains the portable contract, and elicitation is a UX affordance rather than an authorization boundary.
+- **CLI** — the same package ships `doctor`, `install-bridge`, `uninstall-bridge` and `configure` subcommands for setup and diagnostics.
+
 The server performs fast catalogue-level validation before contacting the app.
 
 ### Local bridge protocol

@@ -13,12 +13,19 @@ function createBridge(): BridgeTransport {
 
 const args = process.argv.slice(2);
 
-if (args.length === 0 || args[0] === "serve") {
-  await serveStdio(() => createCompositorMcpServer(createBridge()));
-} else {
-  process.exitCode = await runCli(args, {
-    out: (line) => process.stdout.write(`${line}\n`),
-    err: (line) => process.stderr.write(`${line}\n`),
-    env: process.env,
-  });
+try {
+  if (args.length === 0 || args[0] === "serve") {
+    await serveStdio(() => createCompositorMcpServer(createBridge()));
+  } else {
+    process.exitCode = await runCli(args, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+      env: process.env,
+    });
+  }
+} catch (error) {
+  // A top-level failure (config IO, server startup) exits as a coded software
+  // error with a clean message — never an unhandled rejection stack.
+  process.stderr.write(`compositor-mcp: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 70; // EXIT_SOFTWARE
 }

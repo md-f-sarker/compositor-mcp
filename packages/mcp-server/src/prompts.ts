@@ -47,7 +47,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
           { operation: "app.getState", detail: "Confirm a document is open and note the current canvas size." },
           {
             operation: "document.resizeImage",
-            detail: `Resample to ${width} px wide, scaling the height proportionally. Skip when the canvas is already the target size.`,
+            detail: `Resample to ${width} px wide — the schema requires an explicit height, so compute it from the aspect ratio in step 1's state. Skip when the canvas is already the target size.`,
           },
           {
             operation: "preview.render",
@@ -60,7 +60,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
           },
         ],
         notes: [
-          "Steps 1–3 can share one atomic execute batch.",
+          "Steps 1–2 can share one atomic execute batch; preview.render is a filesystem operation, so send it on its own or in a batch with atomic: false.",
           "The exports are filesystem writes: send them together in a second execute call with atomic: false — they cannot roll back.",
           "document.save writes the project file afterwards if the resized canvas should be kept.",
         ],
@@ -86,8 +86,8 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
             detail:
               'Run kind "Remove Background" with settings {backgroundQuality: "Advanced", refineEdges: 20} for hair and fine edges. The app commits a mask that keeps the subject.',
           },
-          { operation: "layer.addBlank", detail: "Insert a fresh backdrop layer." },
-          { operation: "layer.move", detail: "Move it directly below the subject layer (offset -1)." },
+          { operation: "layer.addBlank", detail: "Insert a fresh backdrop layer — capture the layerId its result returns." },
+          { operation: "layer.move", detail: "Move the backdrop (layerId from step 4's result) directly below the subject layer (offset -1)." },
           { operation: "pixels.fill", detail: "Fill the backdrop with the foreground colour to preview the cut edge." },
           {
             operation: "layer.featherMask",
@@ -122,6 +122,10 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
         steps: [
           { operation: "app.getState", detail: "Confirm a document is open and pick the layer to retouch." },
           { operation: "layer.select", detail: "Select that layer only — strokes land on the active layer." },
+          {
+            operation: "preview.render",
+            detail: "Inspect the frame first — the selection and stroke steps below need document-space coordinates for the blemish.",
+          },
           {
             operation: "selection.polygon",
             detail: "Lasso the blemish (or selection.magicWand on a flat halo). Skip for freehand strokes.",

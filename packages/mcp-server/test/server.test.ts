@@ -146,6 +146,26 @@ test("search returns structuredContent with a hits array, with text content", as
   assert.equal(result.structuredContent?.["count"], (result.structuredContent?.["results"] as unknown[]).length);
 });
 
+test("search structuredContent satisfies its advertised outputSchema, with total/truncated", async () => {
+  const { request } = await createTestClient(new MockBridgeTransport());
+  const { tools } = await request<{ tools: ToolListEntry[] }>("tools/list");
+  const schema = tools.find((tool) => tool.name === "search")!.outputSchema!;
+
+  // "layer" matches far more than two operations, exercising truncation.
+  const result = await request<CallToolResultShape>("tools/call", {
+    name: "search",
+    arguments: { query: "layer", limit: 2 },
+  });
+  assert.ok(result.structuredContent, "structuredContent present");
+  assert.equal(result.structuredContent["count"], 2);
+  assert.equal(result.structuredContent["truncated"], true);
+  assert.ok(
+    typeof result.structuredContent["total"] === "number" && result.structuredContent["total"] > 2,
+    "total reports the pre-limit match count",
+  );
+  assert.deepEqual(validateJsonSchema(schema, result.structuredContent as JsonValue), []);
+});
+
 test("compositor://state returns the same shape as app.getState", async () => {
   const bridge = new MockBridgeTransport();
   const { request } = await createTestClient(bridge);
@@ -174,17 +194,30 @@ test("compositor://layers flattens the layer tree out of state", async () => {
   assert.ok(tree.layers.some((layer) => layer.name === "Retouch"));
 });
 
-test("compositor://capabilities serves the catalogue", async () => {
+test("compositor://capabilities serves the catalogue synthesised server-side", async () => {
   const { request } = await createTestClient(new MockBridgeTransport());
   const read = await request<{ contents: Array<{ text?: string }> }>("resources/read", { uri: "compositor://capabilities" });
   const envelope = JSON.parse(read.contents[0]!.text!) as {
     protocol?: string;
     implemented?: string[];
-    catalogue?: Array<{ name: string }>;
+    catalogue?: Array<{ name: string; inputSchema?: unknown; status?: string }>;
   };
   assert.equal(envelope.protocol, "compositor-bridge/1");
   assert.equal(envelope.implemented?.length, CAPABILITY_BY_NAME.size);
-  assert.ok(envelope.catalogue?.some((entry) => entry.name === "preview.render"));
+  // The catalogue is synthesised from the shared registry, filtered to the
+  // bridge's implemented list — so each entry carries the full schema even if
+  // the bridge's own payload only named operations.
+  assert.ok(Array.isArray(envelope.catalogue));
+  const catalogue = new Map(envelope.catalogue!.map((entry) => [entry.name, entry]));
+  for (const name of envelope.implemented ?? []) {
+    const entry = catalogue.get(name);
+    assert.ok(entry, `${name} is implemented but missing from the synthesised catalogue`);
+    assert.equal(entry.status, "implemented");
+    assert.ok(entry.inputSchema, `${name} catalogue entry carries its inputSchema`);
+    // JSON round-trip, so the registry object is compared structurally.
+    assert.deepEqual(entry, JSON.parse(JSON.stringify(CAPABILITY_BY_NAME.get(name))));
+  }
+  assert.ok(catalogue.has("preview.render"));
 });
 
 test("preview.render caches bytes for compositor://preview/latest and inlines the image", async () => {
@@ -354,6 +387,51 @@ test("confirmDestructive: true remains the portable non-interactive contract", a
     arguments: { confirmDestructive: true, operations: [{ name: "layer.delete", arguments: { layerId: "active" } }] },
   });
   assert.equal(result.structuredContent?.["ok"], true);
+});
+
+test("a non-atomic partial failure keeps its structuredContent envelope", async () => {
+  const { request } = await createTestClient(new MockBridgeTransport());
+  const { tools } = await request<{ tools: ToolListEntry[] }>("tools/list");
+  const schema = tools.find((tool) => tool.name === "execute")!.outputSchema!;
+
+  await request("tools/call", { name: "execute", arguments: { operations: [createDocument] } });
+  const result = await request<CallToolResultShape>("tools/call", {
+    name: "execute",
+    arguments: {
+      atomic: false,
+      operations: [
+        { name: "layer.addBlank", arguments: { name: "Kept" } },
+        { name: "layer.rename", arguments: { layerId: "does-not-exist", name: "Ghost" } },
+      ],
+    },
+  });
+
+  // A failed batch is still a normal result: ok:false with per-op results and
+  // no rollback, not an isError payload — and it must satisfy the outputSchema.
+  assert.equal(result.isError, undefined);
+  const structured = result.structuredContent!;
+  assert.equal(structured["ok"], false);
+  const results = structured["results"] as Array<{ ok: boolean; error?: { code: string } }>;
+  assert.equal(results[0]?.ok, true);
+  assert.equal(results[1]?.ok, false);
+  assert.equal(results[1]?.error?.code, "not_found");
+  assert.equal(structured["rolledBack"], false);
+  assert.deepEqual(validateJsonSchema(schema, structured as JsonValue), []);
+});
+
+test("a cancelled elicitation fails the batch with confirmation_declined", async () => {
+  const { request } = await createTestClient(new MockBridgeTransport(), {
+    capabilities: { elicitation: {} },
+    onServerRequest: (message, reply) => {
+      if (message.method === "elicitation/create") reply({ action: "cancel" });
+    },
+  });
+  const result = await request<CallToolResultShape>("tools/call", {
+    name: "execute",
+    arguments: { operations: [{ name: "layer.delete", arguments: { layerId: "active" } }] },
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.content![0]!.text!, /confirmation_declined/);
 });
 
 test("execute errors keep isError plus a JSON error payload", async () => {

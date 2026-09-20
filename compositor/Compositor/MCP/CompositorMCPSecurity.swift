@@ -39,12 +39,18 @@ enum CompositorMCPRuntimeFiles {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
         let temporary = directory.appendingPathComponent("bridge-\(UUID().uuidString).tmp")
-        // The UUID name means nothing reads the temp file mid-write; atomicity comes
-        // from the moveItem below, and the chmod must precede it either way.
+        // The UUID name means nothing reads the temp file mid-write. The chmod must
+        // precede the rename so bridge.json never exists with looser permissions.
         try data.write(to: temporary)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        _ = try? FileManager.default.removeItem(at: discovery)
-        try FileManager.default.moveItem(at: temporary, to: discovery)
+        // rename(2) atomically replaces bridge.json; removeItem+moveItem left a
+        // window where no discovery file existed for clients to find.
+        guard rename(temporary.path, discovery.path) == 0 else {
+            let code = errno
+            _ = try? FileManager.default.removeItem(at: temporary)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code),
+                          userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(code))])
+        }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: discovery.path)
     }
 
@@ -94,10 +100,29 @@ struct CompositorMCPConfiguration: Codable, Sendable {
         auditLogging = try values.decodeIfPresent(Bool.self, forKey: .auditLogging) ?? true
     }
 
+    /// Missing config means "never configured" and keeps the defaults. A config that
+    /// exists but cannot be decoded or read fails closed — silently applying defaults
+    /// would re-enable a bridge the user disabled.
     static func load() -> Self {
-        guard let data = try? Data(contentsOf: CompositorMCPRuntimeFiles.configuration),
-              let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
-        return value
+        do {
+            let data = try Data(contentsOf: CompositorMCPRuntimeFiles.configuration)
+            do {
+                return try JSONDecoder().decode(Self.self, from: data)
+            } catch {
+                NSLog("Compositor MCP configuration is corrupt; disabling the bridge: %@", error.localizedDescription)
+                return Self(enabled: false)
+            }
+        } catch let error as NSError {
+            if error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+                return Self()
+            }
+            if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+               underlying.domain == NSPOSIXErrorDomain && underlying.code == Int(ENOENT) {
+                return Self()
+            }
+            NSLog("Compositor MCP configuration could not be read; disabling the bridge: %@", error.localizedDescription)
+            return Self(enabled: false)
+        }
     }
 }
 
@@ -156,6 +181,23 @@ final class CompositorMCPPathPolicy {
         if !forWrite || FileManager.default.fileExists(atPath: value.path) {
             return value.resolvingSymlinksInPath()
         }
+        // fileExists follows links, so a dangling leaf symlink inside an allowed root
+        // reports false here even though the path is occupied — and a write through it
+        // would land outside the root. Check the leaf itself with readlink semantics;
+        // if it is a symlink, resolve the real target so containment runs against it.
+        if let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: value.path) {
+            let resolved = value.resolvingSymlinksInPath()
+            if resolved.standardizedFileURL.path != value.standardizedFileURL.path {
+                return resolved
+            }
+            // resolvingSymlinksInPath left the dangling leaf in place; resolve the
+            // link contents manually (absolute, or relative to the link's directory).
+            let parent = value.deletingLastPathComponent().resolvingSymlinksInPath()
+            let target = destination.hasPrefix("/")
+                ? URL(fileURLWithPath: destination)
+                : parent.appendingPathComponent(destination)
+            return target.standardizedFileURL.resolvingSymlinksInPath()
+        }
         let parent = value.deletingLastPathComponent().resolvingSymlinksInPath()
         return parent.appendingPathComponent(value.lastPathComponent).standardizedFileURL
     }
@@ -191,6 +233,27 @@ actor CompositorMCPAuditLog {
             body.append(line)
             body.append("\n")
         }
+        writeBody(body)
+    }
+
+    /// Records a request rejected before it reached an operation (malformed JSON,
+    /// bad token, oversized payload, confirmation_required, …) so denials are
+    /// visible alongside execute records. `method` and `code` must never carry
+    /// token material.
+    func reject(requestId: String, method: String, code: String) async {
+        guard CompositorMCPConfiguration.load().auditLogging else { return }
+        let record: CompositorMCPJSON = .object([
+            "timestamp": .string(formatter.string(from: Date())),
+            "requestId": .string(requestId),
+            "method": .string(method),
+            "ok": .bool(false),
+            "code": .string(code)
+        ])
+        guard let data = try? JSONEncoder().encode(record), let line = String(data: data, encoding: .utf8) else { return }
+        writeBody(line + "\n")
+    }
+
+    private func writeBody(_ body: String) {
         guard !body.isEmpty else { return }
         do {
             try CompositorMCPRuntimeFiles.ensureDirectory()
@@ -201,17 +264,41 @@ actor CompositorMCPAuditLog {
             let incoming = Data(body.utf8)
             let size = (try? FileManager.default.attributesOfItem(atPath: CompositorMCPRuntimeFiles.auditLog.path))?[.size] as? Int ?? 0
             if size + incoming.count > maxLogBytes, let log = try? Data(contentsOf: CompositorMCPRuntimeFiles.auditLog) {
-                // Over the cap: rewrite keeping the newest whole lines under maxLogBytes.
-                var tail = (log + incoming).suffix(maxLogBytes)
+                // Over the cap: keep only the newest ~maxLogBytes/2 of whole lines so
+                // steady-state appends stay cheap instead of rewriting ~8 MB every
+                // time, and prepend a marker noting that history was dropped.
+                var tail = (log + incoming).suffix(maxLogBytes / 2)
                 if let newline = tail.firstIndex(of: 0x0a) {
                     tail = tail.suffix(from: tail.index(after: newline))
                 }
-                try Data(tail).write(to: CompositorMCPRuntimeFiles.auditLog)
+                var replacement = Data()
+                let marker: CompositorMCPJSON = .object([
+                    "timestamp": .string(formatter.string(from: Date())),
+                    "requestId": .string("audit"),
+                    "operation": .string("audit_truncated"),
+                    "ok": .bool(true),
+                    "details": .object(["keptBytes": .number(Double(tail.count))])
+                ])
+                if let markerData = try? JSONEncoder().encode(marker) {
+                    replacement.append(markerData)
+                    replacement.append(0x0a)
+                }
+                replacement.append(contentsOf: tail)
+                // Temp file + rename keeps the rewrite atomic: a crash mid-write can
+                // no longer leave a half-written log.
+                let temporary = CompositorMCPRuntimeFiles.directory.appendingPathComponent("audit-\(UUID().uuidString).tmp")
+                try replacement.write(to: temporary)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+                guard rename(temporary.path, CompositorMCPRuntimeFiles.auditLog.path) == 0 else {
+                    _ = try? FileManager.default.removeItem(at: temporary)
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
             } else {
                 let handle = try FileHandle(forWritingTo: CompositorMCPRuntimeFiles.auditLog)
+                // defer: close must run even when seekToEnd/write throws.
+                defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: incoming)
-                try handle.close()
             }
         } catch {
             // Auditing must never break editing. A future UI can surface audit-write failures.

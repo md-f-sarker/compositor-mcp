@@ -62,9 +62,10 @@ test("operation arguments are checked against the capability schema", () => {
   );
 });
 
-/// The mock's state() nests the open document under `current`.
+/// The mock's state() nests the open document under `document`, matching the
+/// real bridge's state envelope.
 interface MockState {
-  current: MockDocument | null;
+  document: MockDocument | null;
 }
 
 interface SelectionSnapshot {
@@ -85,26 +86,60 @@ const createDocument = async (bridge: MockBridgeTransport, width = 1200, height 
   await handleExecute(bridge, { operations: [{ name: "document.create", arguments: { width, height } }] });
 };
 
+test("document.create returns the project, document and active layer ids", async () => {
+  const bridge = new MockBridgeTransport();
+  const result = await execute(bridge, {
+    operations: [{ name: "document.create", arguments: { width: 640, height: 480 } }],
+  });
+  assert.equal(result.ok, true);
+  const outcome = result.results[0]?.value as Record<string, unknown>;
+  assert.equal(typeof outcome["projectId"], "string");
+  assert.equal(typeof outcome["documentId"], "string");
+  // A fresh canvas's base layer may or may not exist, but the key is always present.
+  assert.ok("activeLayerId" in outcome);
+  assert.ok(outcome["activeLayerId"] === null || typeof outcome["activeLayerId"] === "string");
+});
+
+test("layer.list returns the summary envelope, not the whole state snapshot", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  await handleExecute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name: "Art" } }] });
+  const result = await execute(bridge, { operations: [{ name: "layer.list", arguments: {} }] });
+  assert.equal(result.ok, true);
+  const value = result.results[0]?.value as Record<string, unknown>;
+  assert.equal(typeof value["projectId"], "string");
+  assert.equal(typeof value["documentId"], "string");
+  assert.equal(typeof value["activeLayerId"], "string");
+  assert.ok(Array.isArray(value["selectedLayerIds"]));
+  const layers = value["layers"] as Array<{ id: string; name: string }>;
+  assert.ok(layers.some((layer) => layer.name === "Art"));
+  // The summary envelope carries no document dimensions or selection state.
+  assert.equal(value["width"], undefined);
+  assert.equal(value["selection"], undefined);
+});
+
 test("document.crop shrinks the canvas to the rect", async () => {
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
   const result = await execute(bridge, {
+    confirmDestructive: true,
     operations: [{ name: "document.crop", arguments: { x: 64, y: 64, width: 512, height: 512 } }],
   });
   assert.equal(result.ok, true);
-  assert.equal(result.state.current?.width, 512);
-  assert.equal(result.state.current?.height, 512);
+  assert.equal(result.state.document?.width, 512);
+  assert.equal(result.state.document?.height, 512);
 });
 
 test("document.crop rejects a fully outside rect", async () => {
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
   const result = await execute(bridge, {
+    confirmDestructive: true,
     operations: [{ name: "document.crop", arguments: { x: 5000, y: 5000, width: 512, height: 512 } }],
   });
   assert.equal(result.ok, false);
   assert.equal(result.results[0]?.error?.code, "invalid_arguments");
-  assert.equal(result.state.current?.width, 1200);
+  assert.equal(result.state.document?.width, 1200);
 });
 
 test("document.resizeCanvas anchored top-left grows right/bottom without moving pixels", async () => {
@@ -115,9 +150,9 @@ test("document.resizeCanvas anchored top-left grows right/bottom without moving 
     operations: [{ name: "document.resizeCanvas", arguments: { width: 1920, height: 1080, anchor: "top-left" } }],
   });
   assert.equal(result.ok, true);
-  assert.equal(result.state.current?.width, 1920);
-  assert.equal(result.state.current?.height, 1080);
-  const layer = result.state.current?.layers[0];
+  assert.equal(result.state.document?.width, 1920);
+  assert.equal(result.state.document?.height, 1080);
+  const layer = result.state.document?.layers[0];
   assert.equal(layer?.transform.x, 0);
   assert.equal(layer?.transform.y, 0);
 });
@@ -129,8 +164,8 @@ test("document.resizeImage resamples the whole document and rejects >30,000 px",
     operations: [{ name: "document.resizeImage", arguments: { width: 600, height: 400, resolution: 144 } }],
   });
   assert.equal(result.ok, true);
-  assert.equal(result.state.current?.width, 600);
-  assert.equal(result.state.current?.resolution, 144);
+  assert.equal(result.state.document?.width, 600);
+  assert.equal(result.state.document?.resolution, 144);
   assert.throws(
     () => validateExecuteRequest({ operations: [{ name: "document.resizeImage", arguments: { width: 31000, height: 100 } }] }),
     /at most 30000/i,
@@ -142,8 +177,10 @@ test("layer.ungroup dissolves a two-layer group preserving order", async () => {
   await createDocument(bridge);
   await handleExecute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name: "A" } }] });
   const withTwo = await execute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name: "B" } }] });
-  const ids = (withTwo.state.current?.layers ?? []).map((layer) => layer.id);
-  assert.equal(ids.length, 2);
+  // document.create now starts with one base layer, matching the real bridge —
+  // group every layer so ungroup restores exactly this set.
+  const ids = (withTwo.state.document?.layers ?? []).map((layer) => layer.id);
+  assert.ok(ids.length >= 2);
   const grouped = await execute(bridge, {
     operations: [
       { name: "layer.select", arguments: { layerIds: ids } },
@@ -151,10 +188,10 @@ test("layer.ungroup dissolves a two-layer group preserving order", async () => {
     ],
   });
   assert.equal(grouped.ok, true);
-  assert.equal(grouped.state.current?.layers.some((layer) => layer.group), true);
+  assert.equal(grouped.state.document?.layers.some((layer) => layer.group), true);
   const result = await execute(bridge, { operations: [{ name: "layer.ungroup", arguments: { layerId: "active" } }] });
   assert.equal(result.ok, true);
-  const layers = result.state.current?.layers ?? [];
+  const layers = result.state.document?.layers ?? [];
   assert.equal(layers.some((layer) => layer.group), false);
   assert.deepEqual(layers.map((layer) => layer.id), ids);
   assert.ok(layers.every((layer) => layer.parentId === null));
@@ -240,9 +277,13 @@ test("layer.distort commits valid corners and rejects bad input", async () => {
 test("atomic crop + failing transform rolls back cleanly", async () => {
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
-  await execute(bridge, { operations: [{ name: "document.crop", arguments: { x: 64, y: 64, width: 512, height: 512 } }] });
+  await execute(bridge, {
+    confirmDestructive: true,
+    operations: [{ name: "document.crop", arguments: { x: 64, y: 64, width: 512, height: 512 } }],
+  });
   const result = await execute(bridge, {
     atomic: true,
+    confirmDestructive: true,
     operations: [
       { name: "document.crop", arguments: { x: 0, y: 0, width: 256, height: 256 } },
       { name: "layer.transform", arguments: { layerId: "does-not-exist", x: 0 } },
@@ -250,7 +291,7 @@ test("atomic crop + failing transform rolls back cleanly", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.rolledBack, true);
-  assert.equal(result.state.current?.width, 512);
+  assert.equal(result.state.document?.width, 512);
 });
 
 test("dry-run validates the new geometry operations", async () => {
@@ -266,7 +307,7 @@ test("dry-run validates the new geometry operations", async () => {
   });
   assert.equal(result.ok, true);
   assert.equal(result.results.every((entry) => entry.ok), true);
-  assert.equal(result.state.current?.width, 1200);
+  assert.equal(result.state.document?.width, 1200);
 });
 
 test("selection.rectangle replace reports bounds equal to the rect", async () => {
@@ -279,7 +320,7 @@ test("selection.rectangle replace reports bounds equal to the rect", async () =>
   const snapshot = result.results[0]?.value as SelectionSnapshot;
   assert.equal(snapshot.exists, true);
   assert.deepEqual(snapshot.bounds, { x: 40, y: 40, width: 400, height: 300 });
-  assert.deepEqual(result.state.current?.selection, { x: 40, y: 40, width: 400, height: 300 });
+  assert.deepEqual(result.state.document?.selection, { x: 40, y: 40, width: 400, height: 300 });
 
   const got = await execute(bridge, { operations: [{ name: "selection.get" }] });
   const reported = got.results[0]?.value as SelectionSnapshot;
@@ -335,7 +376,14 @@ test("selection.polygon selects a five-point outline and rejects two points", as
 test("selection.magicWand selects a flat-colour region and wider tolerance expands it", async () => {
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
-  await execute(bridge, { operations: [{ name: "layer.addBlank", arguments: {} }] });
+  // The wand needs painted content to sample — fill the layer first, like the
+  // real tool refusing to flood a blank canvas.
+  await execute(bridge, {
+    operations: [
+      { name: "layer.addBlank", arguments: {} },
+      { name: "pixels.fill", arguments: {} },
+    ],
+  });
   const narrow = await execute(bridge, {
     operations: [{ name: "selection.magicWand", arguments: { x: 600, y: 400, tolerance: 8 } }],
   });
@@ -360,7 +408,7 @@ test("selection.magicWand with nothing to sample leaves an empty selection", asy
   });
   assert.equal(result.ok, true);
   assert.equal(result.results[0]?.value, null);
-  assert.equal(result.state.current?.selection, null);
+  assert.equal(result.state.document?.selection, null);
 });
 
 test("selection add mode with no existing selection behaves as replace", async () => {
@@ -386,7 +434,9 @@ test("atomic rectangle select + pixels.fill fills the region and rolls back on f
   });
   assert.equal(filled.ok, true);
   assert.equal(filled.rolledBack, false);
-  assert.deepEqual(filled.state.current?.layers[0]?.fill, { x: 10, y: 10, width: 100, height: 100 });
+  // The fill lands on the active "Fill" layer — index 0 is the base layer
+  // document.create adds, matching the real bridge.
+  assert.deepEqual(filled.state.document?.layers.at(-1)?.fill, { x: 10, y: 10, width: 100, height: 100 });
 
   const rolled = await execute(bridge, {
     atomic: true,
@@ -397,7 +447,7 @@ test("atomic rectangle select + pixels.fill fills the region and rolls back on f
   });
   assert.equal(rolled.ok, false);
   assert.equal(rolled.rolledBack, true);
-  assert.deepEqual(rolled.state.current?.selection, { x: 10, y: 10, width: 100, height: 100 });
+  assert.deepEqual(rolled.state.document?.selection, { x: 10, y: 10, width: 100, height: 100 });
 });
 
 interface PaintOutcome {
@@ -411,7 +461,7 @@ interface PaintOutcome {
 const addPaintableLayer = async (bridge: MockBridgeTransport, name = "Art") => {
   const result = await handleExecute(bridge, { operations: [{ name: "layer.addBlank", arguments: { name } }] });
   const state = (result as { state: MockState }).state;
-  return state.current?.layers[state.current.layers.length - 1]?.id;
+  return state.document?.layers[state.document.layers.length - 1]?.id;
 };
 
 test("paint.brushStroke covers the path's bounds, single undo-style commit", async () => {
@@ -583,7 +633,7 @@ test("paint.gradient commits a ramp and paint.shape creates a shape layer", asyn
   const layer = shape.results[0]?.value as { id: string; shape: boolean; transform: { x: number; y: number; width: number; height: number } };
   assert.equal(layer.shape, true);
   assert.deepEqual(layer.transform, { x: 50, y: 50, width: 200, height: 120, rotation: 0, flipX: false, flipY: false, sampling: "High quality" });
-  assert.equal(shape.state.current?.layers.at(-1)?.id, layer.id);
+  assert.equal(shape.state.document?.layers.at(-1)?.id, layer.id);
 });
 
 test("paint strokes clip to the active selection", async () => {
@@ -617,7 +667,7 @@ test("an atomic batch of two strokes rolls back as one", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.rolledBack, true);
-  const layer = result.state.current?.layers.find((candidate) => candidate.id === layerId);
+  const layer = result.state.document?.layers.find((candidate) => candidate.id === layerId);
   assert.equal(layer?.fill, null);
 });
 
@@ -682,10 +732,10 @@ test("adjustment.add creates an adjustment layer that adjustment.update can edit
   assert.equal(layer.adjustmentKind, "Hue/Saturation");
   assert.equal(layer.name, "Hue/Saturation");
   // layer.list reports the new layer's adjustment metadata.
-  const listed = added.state.current?.layers.find((candidate) => candidate.id === layer.id);
+  const listed = added.state.document?.layers.find((candidate) => candidate.id === layer.id);
   assert.equal(listed?.adjustment, true);
   assert.equal(listed?.adjustmentKind, "Hue/Saturation");
-  assert.deepEqual(added.state.current?.selectedLayerIds, [layer.id]);
+  assert.deepEqual(added.state.document?.selectedLayerIds, [layer.id]);
 
   const updated = await execute(bridge, {
     operations: [
@@ -693,7 +743,7 @@ test("adjustment.add creates an adjustment layer that adjustment.update can edit
     ],
   });
   assert.equal(updated.ok, true);
-  const stored = updated.state.current?.layers.find((candidate) => candidate.id === layer.id);
+  const stored = updated.state.document?.layers.find((candidate) => candidate.id === layer.id);
   assert.equal(stored?.adjustmentParameters?.["saturation"], -40);
 });
 
@@ -715,17 +765,19 @@ test("adjustment.update rejects non-adjustment layers and kind mismatches", asyn
   assert.equal(mismatch.results[0]?.error?.code, "invalid_arguments");
 });
 
-test("adjustment schemas reject unknown kinds and wrong parameter shapes", () => {
+test("adjustment schemas name the valid kinds and surface branch-level issues", () => {
+  // A bad `kind` reads as a discriminator error, not a bare oneOf count.
   assert.throws(
     () => validateExecuteRequest({ operations: [{ name: "adjustment.add", arguments: { kind: "Imaginary" } }] }),
-    /exactly one schema/i,
+    /kind must be one of: Hue\/Saturation, Levels, Curves, Exposure, Gradient Map, Grain/i,
   );
+  // A recognised kind with another kind's parameters reports the offending field.
   assert.throws(
     () =>
       validateExecuteRequest({
         operations: [{ name: "adjustment.add", arguments: { kind: "Hue/Saturation", parameters: { radius: 4 } } }],
       }),
-    /exactly one schema/i,
+    /parameters\.radius.*not allowed/i,
   );
 });
 
@@ -742,7 +794,7 @@ test("filter.apply Gaussian Blur grows the layer by the blur margin", async () =
   assert.equal(outcome.kind, "Gaussian Blur");
   assert.equal(outcome.layerId, layerId);
   // FilterEdit.blurMargin for a radius-4 Gaussian is ceil(4 * 3 + 2) = 14 px each side.
-  const layer = result.state.current?.layers.find((candidate) => candidate.id === layerId);
+  const layer = result.state.document?.layers.find((candidate) => candidate.id === layerId);
   assert.deepEqual(
     { x: layer?.transform.x, y: layer?.transform.y, width: layer?.transform.width, height: layer?.transform.height },
     { x: -14, y: -14, width: 1228, height: 828 },
@@ -767,7 +819,7 @@ test("filter.apply rejects a group layer and an unknown kind", async () => {
   assert.equal(onGroup.results[0]?.error?.code, "invalid_arguments");
   assert.throws(
     () => validateExecuteRequest({ operations: [{ name: "filter.apply", arguments: { kind: "Imaginary" } }] }),
-    /exactly one schema/i,
+    /kind must be one of: Gaussian Blur, Motion Blur, Add Noise/i,
   );
 });
 
@@ -782,7 +834,10 @@ test("filter.apply Remove Background produces a masked layer", async () => {
   const outcome = result.results[0]?.value as { applied: boolean; mask: boolean };
   assert.equal(outcome.applied, true);
   assert.equal(outcome.mask, true);
-  assert.equal(result.state.current?.layers.find((candidate) => candidate.id === layerId)?.mask, true);
+  // State mirrors the real bridge: mask is an {enabled, linked, …} object or null.
+  const mask = result.state.document?.layers.find((candidate) => candidate.id === layerId)?.mask;
+  assert.equal(typeof mask, "object");
+  assert.notEqual(mask, null);
 });
 
 test("pixels.contentAwareFill fills inside a selection and requires one", async () => {
@@ -804,11 +859,69 @@ test("pixels.contentAwareFill fills inside a selection and requires one", async 
   const outcome = filled.results[1]?.value as { applied: boolean; kind: string };
   assert.equal(outcome.applied, true);
   assert.equal(outcome.kind, "Content-Aware Fill");
-  assert.deepEqual(filled.state.current?.layers.at(-1)?.fill, { x: 100, y: 100, width: 50, height: 40 });
+  assert.deepEqual(filled.state.document?.layers.at(-1)?.fill, { x: 100, y: 100, width: 50, height: 40 });
 
   // The same pipeline is reachable through filter.apply's Content-Aware Fill kind.
   const viaFilter = await execute(bridge, {
     operations: [{ name: "filter.apply", arguments: { kind: "Content-Aware Fill" } }],
   });
   assert.equal(viaFilter.ok, true);
+});
+
+test("a missing layer fails with not_found and the atomic batch rolls back", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const layerId = await addPaintableLayer(bridge);
+  const result = await execute(bridge, {
+    atomic: true,
+    operations: [
+      { name: "layer.setOpacity", arguments: { layerId: "active", opacity: 0.25 } },
+      { name: "layer.rename", arguments: { layerId: "does-not-exist", name: "Ghost" } },
+    ],
+  });
+  assert.equal(result.ok, false);
+  // The real router reports not_found (not layer_not_found) for a missing layer.
+  assert.equal(result.results[1]?.error?.code, "not_found");
+  assert.equal(result.rolledBack, true);
+  assert.equal(result.state.document?.layers.find((layer) => layer.id === layerId)?.opacity, 1);
+});
+
+test("layer.select target mask fails on a maskless layer, then paints the mask", async () => {
+  const bridge = new MockBridgeTransport();
+  await createDocument(bridge);
+  const layerId = (await addPaintableLayer(bridge))!;
+
+  // No mask yet — the real router reports not_found for target: "mask".
+  const maskless = await execute(bridge, {
+    operations: [{ name: "layer.select", arguments: { layerIds: [layerId], target: "mask" } }],
+  });
+  assert.equal(maskless.ok, false);
+  assert.equal(maskless.results[0]?.error?.code, "not_found");
+
+  const masked = await execute(bridge, {
+    operations: [
+      { name: "layer.addMask", arguments: { layerId } },
+      { name: "layer.select", arguments: { layerIds: [layerId], target: "mask" } },
+    ],
+  });
+  assert.equal(masked.ok, true);
+  const layer = masked.state.document?.layers.find((candidate) => candidate.id === layerId);
+  assert.equal(typeof layer?.mask, "object");
+  assert.notEqual(layer?.mask, null);
+
+  // Pixels-only tools refuse a mask target, like the real requirePaintTarget.
+  const healed = await execute(bridge, {
+    operations: [{ name: "paint.spotHeal", arguments: { points: [{ x: 10, y: 10 }, { x: 40, y: 40 }] } }],
+  });
+  assert.equal(healed.ok, false);
+  assert.equal(healed.results[0]?.error?.code, "pixel_edit_unavailable");
+
+  // A brush stroke lands on the mask and reports mask: true in its outcome.
+  const stroke = await execute(bridge, {
+    operations: [{ name: "paint.brushStroke", arguments: { points: [{ x: 10, y: 10 }, { x: 40, y: 40 }], diameter: 12 } }],
+  });
+  assert.equal(stroke.ok, true);
+  const outcome = stroke.results[0]?.value as PaintOutcome;
+  assert.equal(outcome.mask, true);
+  assert.equal(outcome.applied, true);
 });

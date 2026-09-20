@@ -26,7 +26,7 @@ Both tools declare an `outputSchema` and return `structuredContent` alongside th
 | --- | --- | --- |
 | `compositor://state` | `application/json` | The same snapshot `app.getState` returns: projects, current document, layers, selection, revision. |
 | `compositor://layers` | `application/json` | The current document's layer tree flattened out of the state snapshot. |
-| `compositor://capabilities` | `application/json` | The full operation catalogue the connected build implements. |
+| `compositor://capabilities` | `application/json` | The full capability catalogue, synthesised server-side and filtered to the connected build's implemented list — a stale bridge can never over-advertise. |
 | `compositor://preview/latest` | `image/png` blob | Bytes of the most recent successful `preview.render` this server session ran. Until the first render it answers with `text/plain` guidance instead. |
 
 Resource reads that need the app (`state`, `layers`, `capabilities`) fail with a protocol error whose `data` carries the bridge error shape — `{ code: "bridge_not_running", retryable: true, ... }` when Compositor is not running.
@@ -39,7 +39,7 @@ Four workflow recipes render step-by-step guidance that names only implemented o
 
 When `preview.render` succeeds, the server reads the PNG the app wrote under `<tmp>/Compositor-MCP/` (owner-only, loopback-only deployment — other paths are refused), caches the bytes for `compositor://preview/latest`, and inlines an `image/png` content block in the execute result when the file is ≤ 1 MiB. Larger renders keep the path-only result.
 
-Destructive operations require `confirmDestructive: true` — the portable contract every client supports. When the client advertises elicitation, `execute` instead asks once via `elicitation/create` (form mode, `confirm` boolean): accepting runs the batch, declining or cancelling fails it with `confirmation_declined`. Clients without elicitation keep the `confirmation_required` tool error unchanged. Elicitation is a UX affordance, not an authorization boundary — the client can always set the flag itself.
+Destructive operations require `confirmDestructive: true` — the portable contract every client supports. The confirmation gate runs *before* per-operation argument validation: a batch that needs confirmation never reports schema errors first. When the client advertises elicitation, `execute` instead asks once via `elicitation/create` (form mode, `confirm` boolean): accepting runs the batch, declining or cancelling fails it with `confirmation_declined`. Clients without elicitation keep the `confirmation_required` tool error unchanged. Elicitation is a UX affordance, not an authorization boundary — the client can always set the flag itself. The `confirmation_required` payload carries `details.operations` (the renamed `destructiveOperations` field), matching the key the bridge emits.
 
 ## Discovery
 

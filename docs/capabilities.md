@@ -36,7 +36,7 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `document.export` | Export flattened image | implemented | filesystem | no | `path`, `format`?, `quality`?, `background`? | aliases: render, save png, save jpeg; tags: export, file, png, jpeg |
 | `document.resizeCanvas` | Resize canvas | implemented | write | yes | `width`, `height`, `anchor`? | aliases: canvas size, expand canvas, change canvas size; tags: canvas, resize, anchor |
 | `document.resizeImage` | Resize image | implemented | write | yes | `width`, `height`, `resolution`? | aliases: resample image, scale image, change image size; tags: image size, resample |
-| `document.crop` | Crop document | implemented | write | yes | `x`, `y`, `width`, `height` | aliases: crop, trim canvas; tags: crop, canvas, bounds |
+| `document.crop` | Crop document | implemented | destructive | yes | `x`, `y`, `width`, `height` | aliases: crop, trim canvas; tags: crop, canvas, bounds |
 | `document.flip` | Flip canvas | implemented | write | yes | `axis` | – |
 
 ## history
