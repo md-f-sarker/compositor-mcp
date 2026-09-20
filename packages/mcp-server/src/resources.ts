@@ -8,7 +8,7 @@ import {
   type McpServer,
   type ReadResourceResult,
 } from "@modelcontextprotocol/server";
-import type { JsonObject, JsonValue } from "@compositor-mcp/protocol";
+import { isJsonObject, type JsonObject, type JsonValue } from "@compositor-mcp/protocol";
 import type { BridgeTransport } from "./bridge-client.js";
 import { CompositorMcpError } from "./errors.js";
 
@@ -22,6 +22,16 @@ export const INLINE_PREVIEW_MAX_BYTES = 1024 * 1024;
 /** Absolute guard rail so a bad preview path can never swap a huge file into the process. */
 const PREVIEW_READ_MAX_BYTES = 16 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/// The preview convention the bridge and the mock both write into:
+/// <tmp>/Compositor-MCP/preview-<uuid>.png with owner-only permissions.
+export const PREVIEW_DIRECTORY = path.join(os.tmpdir(), "Compositor-MCP");
+const PREVIEW_NAME_PATTERN = /^preview-.+\.png$/;
+
+export function isPreviewPath(candidate: string): boolean {
+  const resolved = path.resolve(candidate);
+  return path.dirname(resolved) === PREVIEW_DIRECTORY && PREVIEW_NAME_PATTERN.test(path.basename(resolved));
+}
 
 export interface LatestPreview {
   path: string;
@@ -116,21 +126,26 @@ export async function captureLatestPreview(result: JsonValue, previews: PreviewC
   return [{ type: "image", data: bytes.toString("base64"), mimeType: "image/png" }];
 }
 
-/// The bridge writes previews to <tmp>/Compositor-MCP/preview-<uuid>.png with
-/// owner-only permissions on the same loopback host. Reading any other path
-/// the bridge names would hand a compromised app an arbitrary-file oracle, so
-/// the returned path is pinned to that convention before bytes are touched.
-export async function readPreviewPng(previewPath: string): Promise<Buffer | null> {
-  const resolved = path.resolve(previewPath);
-  if (path.dirname(resolved) !== path.join(os.tmpdir(), "Compositor-MCP")) return null;
-  if (!/^preview-.+\.png$/.test(path.basename(resolved))) return null;
+/// Reads a preview PNG after pinning it to the preview-path convention —
+/// anything else the bridge names would hand a compromised app an
+/// arbitrary-file oracle. The open-first ordering makes the size guard safe:
+/// fstat runs on the opened fd, so a swapped path can never race the read.
+async function readPreviewPng(previewPath: string): Promise<Buffer | null> {
+  if (!isPreviewPath(previewPath)) return null;
+  let handle: fs.FileHandle | undefined;
   try {
-    const metadata = await fs.stat(resolved);
+    handle = await fs.open(previewPath, "r");
+    const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size > PREVIEW_READ_MAX_BYTES) return null;
-    const bytes = await fs.readFile(resolved);
+    const bytes = await handle.readFile();
+    // fstat bounds the size at open time; a same-inode append could still slip
+    // past it, so the bytes themselves are checked before being trusted.
+    if (bytes.length > PREVIEW_READ_MAX_BYTES) return null;
     return bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ? bytes : null;
   } catch {
     return null;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -191,5 +206,5 @@ function jsonContents(uri: string, value: JsonValue): ReadResourceResult {
 }
 
 function asObject(value: unknown): JsonObject | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
+  return isJsonObject(value) ? value : undefined;
 }

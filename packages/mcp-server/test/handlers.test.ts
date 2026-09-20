@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExecuteRequest } from "@compositor-mcp/protocol";
 import { handleExecute, handleSearch, validateExecuteRequest } from "../src/handlers.js";
-import { MockBridgeTransport } from "../src/mock-bridge.js";
+import { MockBridgeTransport, type MockDocument, type MockSelection } from "../src/mock-bridge.js";
 
 test("search finds opacity", () => {
   const result = handleSearch({ query: "make active layer half transparent", limit: 5 });
@@ -62,39 +62,15 @@ test("operation arguments are checked against the capability schema", () => {
   );
 });
 
-interface MockBounds {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
+/// The mock's state() nests the open document under `current`.
 interface MockState {
-  current: {
-    width: number;
-    height: number;
-    resolution: number;
-    layers: Array<{
-      id: string;
-      name: string;
-      parentId: string | null;
-      group: boolean;
-      mask: boolean;
-      fill: MockBounds | null;
-      adjustment: boolean;
-      adjustmentKind: string | null;
-      adjustmentParameters: Record<string, unknown> | null;
-      transform: { x: number; y: number; width: number; height: number };
-    }>;
-    selectedLayerIds: string[];
-    selection: MockBounds | null;
-  } | null;
+  current: MockDocument | null;
 }
 
 interface SelectionSnapshot {
   exists: boolean;
   antialiased: boolean;
-  bounds: MockBounds;
+  bounds: MockSelection;
 }
 
 const execute = async (bridge: MockBridgeTransport, request: ExecuteRequest) =>
@@ -429,7 +405,7 @@ interface PaintOutcome {
   layerId?: string;
   mask?: boolean;
   points?: number;
-  bounds?: MockBounds | null;
+  bounds?: MockSelection | null;
 }
 
 const addPaintableLayer = async (bridge: MockBridgeTransport, name = "Art") => {

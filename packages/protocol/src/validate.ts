@@ -1,8 +1,14 @@
-import type { JsonSchema, JsonValue } from "./types.js";
+import type { JsonObject, JsonSchema, JsonValue } from "./types.js";
 
 export interface SchemaValidationIssue {
   path: string;
   message: string;
+}
+
+/// A non-null, non-array JSON object — the guard the server, mock bridge and
+/// CLI all use to recognise record-shaped values.
+export function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function validateJsonSchema(
@@ -11,17 +17,36 @@ export function validateJsonSchema(
   path = "$",
 ): SchemaValidationIssue[] {
   const issues: SchemaValidationIssue[] = [];
+  validateInto(schema, value, path, issues);
+  return issues;
+}
 
+/// Recursive worker: appends findings to the shared `issues` accumulator so a
+/// deep document never allocates or spreads a fresh array per node.
+function validateInto(
+  schema: JsonSchema,
+  value: unknown,
+  path: string,
+  issues: SchemaValidationIssue[],
+): void {
   if (schema.oneOf) {
-    const matches = schema.oneOf.filter((candidate) => validateJsonSchema(candidate, value, path).length === 0).length;
+    // Bail at the second match: the count only has to distinguish 0, 1 and
+    // "ambiguous", and catalogues with const-keyed branches can never reach 2.
+    let matches = 0;
+    for (const candidate of schema.oneOf) {
+      if (validateJsonSchema(candidate, value, path).length === 0) {
+        matches += 1;
+        if (matches === 2) break;
+      }
+    }
     if (matches !== 1) {
       issues.push({ path, message: `must match exactly one schema (matched ${matches})` });
-      return issues;
+      return;
     }
   }
   if (schema.anyOf && !schema.anyOf.some((candidate) => validateJsonSchema(candidate, value, path).length === 0)) {
     issues.push({ path, message: "must match at least one schema" });
-    return issues;
+    return;
   }
 
   if (schema.const !== undefined && !jsonEqual(value, schema.const)) {
@@ -34,7 +59,7 @@ export function validateJsonSchema(
   const expectedTypes = schema.type === undefined ? [] : Array.isArray(schema.type) ? schema.type : [schema.type];
   if (expectedTypes.length > 0 && !expectedTypes.some((type) => matchesType(type, value))) {
     issues.push({ path, message: `must be ${expectedTypes.join(" or ")}` });
-    return issues;
+    return;
   }
 
   if (typeof value === "number") {
@@ -54,12 +79,12 @@ export function validateJsonSchema(
     if (schema.maxItems !== undefined && value.length > schema.maxItems) issues.push({ path, message: `must contain at most ${schema.maxItems} items` });
     if (schema.items) {
       for (let index = 0; index < value.length; index += 1) {
-        issues.push(...validateJsonSchema(schema.items, value[index], `${path}[${index}]`));
+        validateInto(schema.items, value[index], `${path}[${index}]`, issues);
       }
     }
   }
 
-  if (isRecord(value)) {
+  if (isJsonObject(value)) {
     const properties = schema.properties ?? {};
     for (const required of schema.required ?? []) {
       if (!(required in value)) issues.push({ path: `${path}.${required}`, message: "is required" });
@@ -67,16 +92,14 @@ export function validateJsonSchema(
     for (const [key, child] of Object.entries(value)) {
       const childSchema = properties[key];
       if (childSchema) {
-        issues.push(...validateJsonSchema(childSchema, child, `${path}.${key}`));
+        validateInto(childSchema, child, `${path}.${key}`, issues);
       } else if (schema.additionalProperties === false) {
         issues.push({ path: `${path}.${key}`, message: "is not allowed" });
       } else if (typeof schema.additionalProperties === "object") {
-        issues.push(...validateJsonSchema(schema.additionalProperties, child, `${path}.${key}`));
+        validateInto(schema.additionalProperties, child, `${path}.${key}`, issues);
       }
     }
   }
-
-  return issues;
 }
 
 function matchesType(type: string, value: unknown): boolean {
@@ -87,13 +110,9 @@ function matchesType(type: string, value: unknown): boolean {
     case "number": return typeof value === "number" && Number.isFinite(value);
     case "integer": return typeof value === "number" && Number.isInteger(value);
     case "array": return Array.isArray(value);
-    case "object": return isRecord(value);
+    case "object": return isJsonObject(value);
     default: return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function jsonEqual(left: unknown, right: JsonValue): boolean {

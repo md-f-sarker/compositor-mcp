@@ -6,7 +6,7 @@ import type { JsonObject, JsonValue } from "@compositor-mcp/protocol";
 import type { BridgeTransport } from "../src/bridge-client.js";
 import { SocketBridgeTransport } from "../src/bridge-client.js";
 import { MockBridgeTransport } from "../src/mock-bridge.js";
-import { renderWorkflow, WORKFLOW_PROMPTS } from "../src/prompts.js";
+import { assertImplementedOperation, renderWorkflow, WORKFLOW_PROMPTS } from "../src/prompts.js";
 import { INLINE_PREVIEW_MAX_BYTES } from "../src/resources.js";
 import { createCompositorMcpServer } from "../src/server.js";
 
@@ -177,9 +177,14 @@ test("compositor://layers flattens the layer tree out of state", async () => {
 test("compositor://capabilities serves the catalogue", async () => {
   const { request } = await createTestClient(new MockBridgeTransport());
   const read = await request<{ contents: Array<{ text?: string }> }>("resources/read", { uri: "compositor://capabilities" });
-  const catalogue = JSON.parse(read.contents[0]!.text!) as Array<{ name: string }>;
-  assert.equal(catalogue.length, CAPABILITY_BY_NAME.size);
-  assert.ok(catalogue.some((entry) => entry.name === "preview.render"));
+  const envelope = JSON.parse(read.contents[0]!.text!) as {
+    protocol?: string;
+    implemented?: string[];
+    catalogue?: Array<{ name: string }>;
+  };
+  assert.equal(envelope.protocol, "compositor-bridge/1");
+  assert.equal(envelope.implemented?.length, CAPABILITY_BY_NAME.size);
+  assert.ok(envelope.catalogue?.some((entry) => entry.name === "preview.render"));
 });
 
 test("preview.render caches bytes for compositor://preview/latest and inlines the image", async () => {
@@ -285,9 +290,12 @@ test("every workflow prompt names only implemented catalogue operations", () => 
 });
 
 test("prompt registration fails loudly if a workflow ever names a bad operation", () => {
-  // registerWorkflowPrompts validates at startup; simulate by re-rendering a
-  // prompt whose step list is corrupted.
-  assert.ok(WORKFLOW_PROMPTS.every((prompt) => prompt.build({}).steps.every((step) => CAPABILITY_BY_NAME.get(step.operation)?.status === "implemented")));
+  // registerWorkflowPrompts runs the same assertion at startup.
+  for (const prompt of WORKFLOW_PROMPTS) {
+    for (const step of prompt.build({}).steps) {
+      assertImplementedOperation(prompt.name, step.operation);
+    }
+  }
 });
 
 test("destructive execute elicits confirmation when the client advertises elicitation", async () => {

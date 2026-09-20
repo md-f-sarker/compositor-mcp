@@ -114,7 +114,7 @@ extension CompositorMCPCommandRouter {
             let points = try requireStrokePoints(arguments)
             let mode = try arguments.optionalString("mode") ?? "paint"
             let color = try strokeColor(arguments, mask: session.isMaskSelected, session: session)
-            var settings = strokeSettings(arguments, color: color, opacity: arguments["opacity"]?.number ?? 1)
+            var settings = strokeSettings(arguments, color: color)
             // Upstream only erases layer pixels; on a mask the stroke paints the mask tone,
             // which hides pixels where the mask tone is black — the mask form of erasing.
             settings.erasing = mode == "erase" && !session.isMaskSelected
@@ -127,7 +127,7 @@ extension CompositorMCPCommandRouter {
             let layer = try requirePaintTarget(session, pixelsOnly: true, tool: "Spot Healing")
             let points = try requireStrokePoints(arguments)
             let color = try strokeColor(arguments, mask: false, session: session)
-            var settings = strokeSettings(arguments, color: color, opacity: arguments["opacity"]?.number ?? 1)
+            var settings = strokeSettings(arguments, color: color)
             // Spot Healing is a brush stroke whose painted coverage is rebuilt from nearby
             // pixels by `stroke.heal()` — which `commitStroke` runs, as `finishBrushImmediately` does.
             settings.healing = true
@@ -166,7 +166,7 @@ extension CompositorMCPCommandRouter {
             session.cloneOffset = offset
             session.cloneSettings = previousCloneSettings
             let color = try strokeColor(arguments, mask: false, session: session)
-            let settings = strokeSettings(arguments, color: color, opacity: arguments["opacity"]?.number ?? 1)
+            let settings = strokeSettings(arguments, color: color)
             let stroke = try makeStroke(for: layer, settings: settings, session: session)
             stroke.clone = (sample, offset)
             for point in points { try append(point, to: stroke) }
@@ -186,7 +186,7 @@ extension CompositorMCPCommandRouter {
             }
             let points = try requireStrokePoints(arguments)
             // The warp engines read strength from the settings' opacity channel.
-            let settings = strokeSettings(arguments, color: .black, opacity: arguments["strength"]?.number ?? 1)
+            let settings = strokeSettings(arguments, color: .black, opacityKey: "strength")
             if tool == .blur {
                 // Blur paints a softened copy of the layer (or its mask) through the tip, in
                 // place. `blurSample` derives sigma from the session's brushSettings diameter,
@@ -348,28 +348,16 @@ extension CompositorMCPCommandRouter {
 
     /// A document-space stroke path, bounded like the catalogue schema (1–100,000 points).
     /// `BrushStroke.append` itself drops duplicate and non-finite samples.
-    func requireStrokePoints(_ arguments: [String: CompositorMCPJSON], key: String = "points") throws -> [CGPoint] {
-        guard let raw = arguments[key]?.array, (1...100_000).contains(raw.count) else {
-            throw CompositorMCPCommandError.invalid("\(key) must be an array of 1 to 100,000 {x, y} points.")
+    func requireStrokePoints(_ arguments: [String: CompositorMCPJSON]) throws -> [CGPoint] {
+        guard let raw = arguments["points"]?.array, (1...100_000).contains(raw.count) else {
+            throw CompositorMCPCommandError.invalid("points must be an array of 1 to 100,000 {x, y} points.")
         }
-        return try raw.map { value -> CGPoint in
-            guard let point = value.object,
-                  let x = point["x"]?.number, x.isFinite,
-                  let y = point["y"]?.number, y.isFinite else {
-                throw CompositorMCPCommandError.invalid("\(key) must contain {x, y} points.")
-            }
-            return CGPoint(x: x, y: y)
-        }
+        return try raw.map { try parsePoint($0, message: "points must contain {x, y} points.") }
     }
 
     /// A single document-space point argument: the gradient endpoints and the clone source.
     func requireDocumentPoint(_ arguments: [String: CompositorMCPJSON], key: String) throws -> CGPoint {
-        guard let point = arguments[key]?.object,
-              let x = point["x"]?.number, x.isFinite,
-              let y = point["y"]?.number, y.isFinite else {
-            throw CompositorMCPCommandError.invalid("\(key) must be an {x, y} point.")
-        }
-        return CGPoint(x: x, y: y)
+        try parsePoint(arguments[key] ?? .null, message: "\(key) must be an {x, y} point.")
     }
 
     /// Diameter 1–2,000, hardness 0–1 and opacity/strength 0.01–1 — the bounds
@@ -406,12 +394,13 @@ extension CompositorMCPCommandRouter {
 
     /// Explicit per-call brush settings. Unlike the interactive tool — which reads the
     /// options bar — every MCP stroke carries its own parameters; the defaults equal
-    /// `BrushSettings`' own (40 px, fully hard, fully opaque).
-    func strokeSettings(_ arguments: [String: CompositorMCPJSON], color: PaletteColor, opacity: Double) -> BrushSettings {
+    /// `BrushSettings`' own (40 px, fully hard, fully opaque). `opacityKey` is
+    /// "strength" for the warp tools, which read strength from the opacity channel.
+    func strokeSettings(_ arguments: [String: CompositorMCPJSON], color: PaletteColor, opacityKey: String = "opacity") -> BrushSettings {
         var settings = BrushSettings()
         settings.diameter = CGFloat(arguments["diameter"]?.number ?? 40)
         settings.hardness = CGFloat(arguments["hardness"]?.number ?? 1)
-        settings.opacity = CGFloat(opacity)
+        settings.opacity = CGFloat(arguments[opacityKey]?.number ?? 1)
         settings.red = color.red
         settings.green = color.green
         settings.blue = color.blue
@@ -430,36 +419,29 @@ extension CompositorMCPCommandRouter {
         return session.foregroundColor
     }
 
-    /// `#RRGGBB` colour arguments; distinct from the router's `parseHex` so errors name the
-    /// right parameter.
+    /// `#RRGGBB` colour arguments → `PaletteColor`; the router's `parseHex` does the
+    /// parsing so errors name `argument`.
     func paintColorValue(_ value: String, argument: String) throws -> PaletteColor {
-        let trimmed = value.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        guard trimmed.count == 6, let integer = Int(trimmed, radix: 16) else {
-            throw CompositorMCPCommandError.invalid("\(argument) must be a six-digit hex colour.")
-        }
-        return PaletteColor(
-            red: CGFloat((integer >> 16) & 0xff) / 255,
-            green: CGFloat((integer >> 8) & 0xff) / 255,
-            blue: CGFloat(integer & 0xff) / 255
-        )
+        let rgb = try parseHex(value, argument: argument)
+        return PaletteColor(red: rgb.0, green: rgb.1, blue: rgb.2)
     }
 
     /// Enum arguments match on the upstream raw values ("Content-Aware", "Smudge", …),
     /// case-insensitively like the router's blend-mode lookup.
     func spotHealingMode(_ value: String) -> SpotHealingMode? {
-        SpotHealingMode.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        SpotHealingMode.matching(value)
     }
     func blurToolMode(_ value: String) -> BlurToolMode? {
-        BlurToolMode.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        BlurToolMode.matching(value)
     }
     func gradientShape(_ value: String) -> GradientShape? {
-        GradientShape.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        GradientShape.matching(value)
     }
     func gradientStyle(_ value: String) -> GradientStyle? {
-        GradientStyle.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        GradientStyle.matching(value)
     }
     func shapeKind(_ value: String) -> ShapeKind? {
-        ShapeKind.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        ShapeKind.matching(value)
     }
 
     /// `makeRasterEdit` rethrows with the bridge's error shape.
@@ -541,17 +523,11 @@ extension CompositorMCPCommandRouter {
                             start: CGPoint, end: CGPoint, reversed: Bool, opacity: Double,
                             layer: ImageLayer, document: CanvasDocument,
                             session: EditorSession) async throws -> Outcome {
-        let image = try gradientImage(stops: stops, shape: shape, start: start, end: end,
-                                      canvas: document.size, reversed: reversed)
         var settings = BrushSettings()
         settings.diameter = 2000   // the widest brush: the fewest coverage rows
         settings.hardness = 1      // a hard tip saturates coverage to full strength
         settings.opacity = CGFloat(max(0.01, opacity))
         let stroke = try makeStroke(for: layer, settings: settings, session: session)
-        stroke.clone = (image, .zero)
-        // `isBlur` is what lets the clone path draw into mask tiles at all; the Blur tool
-        // sets it for exactly this purpose, and on a pixels target it changes nothing.
-        if stroke.isMask { stroke.isBlur = true }
         // Only the paintable region needs coverage — the canvas intersected with the
         // selection, the same region `fillGradient` paints.
         var region = CGRect(origin: .zero, size: document.size)
@@ -559,6 +535,15 @@ extension CompositorMCPCommandRouter {
         guard !region.isNull, !region.isEmpty else {
             return strokeOutcome(stroke: nil, layer: layer, mask: session.isMaskSelected, points: 0, applied: false)
         }
+        // The ramp is rendered at the region's extent — a full-canvas image could mean
+        // gigabytes for a small selection — and re-anchored through the clone offset.
+        let extent = region.integral
+        let image = try gradientImage(stops: stops, shape: shape, start: start, end: end,
+                                      extent: extent, reversed: reversed)
+        stroke.clone = (image, CGSize(width: -extent.minX, height: -extent.minY))
+        // `isBlur` is what lets the clone path draw into mask tiles at all; the Blur tool
+        // sets it for exactly this purpose, and on a pixels target it changes nothing.
+        if stroke.isMask { stroke.isBlur = true }
         let path = coveragePath(region, diameter: settings.diameter)
         for point in path { try append(point, to: stroke) }
         return try await commitStroke(stroke, name: stroke.isMask ? "Gradient Mask" : "Gradient",
@@ -566,11 +551,12 @@ extension CompositorMCPCommandRouter {
     }
 
     /// A document-space ramp image for explicit colour stops, honouring every offset.
-    /// `reversed` mirrors the ramp, as the options bar's Reverse does. Rendered in sRGB; on
-    /// a mask target the clone channel draws it into the gray tile contexts, converting as
+    /// `reversed` mirrors the ramp, as the options bar's Reverse does. Only `extent` — the
+    /// paintable region — is rendered (in sRGB), so a small selection stays cheap; on a
+    /// mask target the clone channel draws it into the gray tile contexts, converting as
     /// it does for any image.
     func gradientImage(stops: [PaintGradientStop], shape: GradientShape,
-                       start: CGPoint, end: CGPoint, canvas: CGSize, reversed: Bool) throws -> CGImage {
+                       start: CGPoint, end: CGPoint, extent: CGRect, reversed: Bool) throws -> CGImage {
         let sorted = stops.sorted { $0.offset < $1.offset }
         let ordered = reversed
             ? sorted.map { PaintGradientStop(offset: 1 - $0.offset, color: $0.color) }.sorted { $0.offset < $1.offset }
@@ -586,10 +572,12 @@ extension CompositorMCPCommandRouter {
         }
         let context: CGContext
         do {
-            context = try BrushRaster.context(width: Int(canvas.width), height: Int(canvas.height), mask: false)
+            context = try BrushRaster.context(width: Int(extent.width), height: Int(extent.height), mask: false)
         } catch {
             throw CompositorMCPCommandError(code: "gradient_failed", message: error.localizedDescription)
         }
+        // Pixel (0, 0) is the extent's minimum corner; the gradient runs in document space.
+        context.translateBy(x: -extent.minX, y: -extent.minY)
         switch shape {
         case .linear:
             context.drawLinearGradient(gradient, start: start, end: end,

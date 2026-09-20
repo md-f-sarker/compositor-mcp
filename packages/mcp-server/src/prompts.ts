@@ -223,7 +223,9 @@ export function renderWorkflow(workflow: WorkflowPrompt, args: Record<string, st
   ].join("\n");
 }
 
-function assertImplementedOperation(promptName: string, operation: string): void {
+/// Throws when a workflow step names an operation the catalogue does not
+/// implement — run at registration time and reused by the prompt tests.
+export function assertImplementedOperation(promptName: string, operation: string): void {
   const capability = CAPABILITY_BY_NAME.get(operation);
   if (!capability || capability.status !== "implemented") {
     throw new Error(

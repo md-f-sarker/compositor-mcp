@@ -253,7 +253,7 @@ extension CompositorMCPCommandRouter {
     /// case-insensitively like the router's blend-mode lookup.
     func requireAdjustmentKind(_ arguments: [String: CompositorMCPJSON]) throws -> AdjustmentKind {
         let value = try arguments.requiredString("kind")
-        guard let kind = AdjustmentKind.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+        guard let kind = AdjustmentKind.matching(value) else {
             throw CompositorMCPCommandError.invalid("Unknown adjustment kind: \(value)")
         }
         return kind
@@ -261,7 +261,7 @@ extension CompositorMCPCommandRouter {
 
     func requireFilterKind(_ arguments: [String: CompositorMCPJSON]) throws -> FilterKind {
         let value = try arguments.requiredString("kind")
-        guard let kind = FilterKind.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+        guard let kind = FilterKind.matching(value) else {
             throw CompositorMCPCommandError.invalid("Unknown filter kind: \(value)")
         }
         return kind
@@ -279,11 +279,11 @@ extension CompositorMCPCommandRouter {
 
     /// The catalogue's colour ranges, matched on their upstream raw values.
     func colorRange(_ value: String) -> ColorRange? {
-        ColorRange.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        ColorRange.matching(value)
     }
 
     func levelsChannel(_ value: String) -> LevelsChannel? {
-        LevelsChannel.allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+        LevelsChannel.matching(value)
     }
 
     /// A `LayerAdjustment` of `kind` with the caller's parameters merged onto `base` (the
@@ -415,12 +415,11 @@ extension CompositorMCPCommandRouter {
                     throw CompositorMCPCommandError.invalid("each channel must be a list of 2 to 32 points.")
                 }
                 let points = try list.map { raw -> CurvePoint in
-                    guard let point = raw.object,
-                          let x = point["x"]?.number, x.isFinite, (0...255).contains(x),
-                          let y = point["y"]?.number, y.isFinite, (0...255).contains(y) else {
+                    let point = try parsePoint(raw, message: "channels must contain {x, y} points between 0 and 255.")
+                    guard (0...255).contains(point.x), (0...255).contains(point.y) else {
                         throw CompositorMCPCommandError.invalid("channels must contain {x, y} points between 0 and 255.")
                     }
-                    return CurvePoint(x: x, y: y)
+                    return CurvePoint(x: point.x, y: point.y)
                 }
                 guard points.first?.x == 0, points.last?.x == 255,
                       zip(points, points.dropFirst()).allSatisfy({ $0.x < $1.x }) else {
@@ -504,7 +503,7 @@ extension CompositorMCPCommandRouter {
             if let value = try fields.optionalDouble("distortion") { settings.distortion = value }
         case .removeBackground:
             if let value = try fields.optionalString("backgroundQuality") {
-                guard let quality = BackgroundQuality.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+                guard let quality = BackgroundQuality.matching(value) else {
                     throw CompositorMCPCommandError.invalid("backgroundQuality must be Basic or Advanced.")
                 }
                 settings.backgroundQuality = quality

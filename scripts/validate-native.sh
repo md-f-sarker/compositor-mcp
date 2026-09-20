@@ -49,9 +49,11 @@ echo "MCP file errors: $MCP_ERRORS (must be 0)"
 [ "$MCP_ERRORS" = "0" ] || exit 1
 
 echo "==> Building headless bridge harness"
+# Top-level code must live in a file literally named main.swift.
+cp "$REPO/scripts/validation/harness-main.swift" "$WORK/main.swift"
 swiftc -o "$WORK/bridge-harness" $FLAGS \
   -import-objc-header Compositor/Compositor-Bridging-Header.h \
-  "$REPO/scripts/validation/harness-main.swift" "$REPO/scripts/validation/HarnessStubs.swift" \
+  "$WORK/main.swift" "$REPO/scripts/validation/HarnessStubs.swift" \
   $(find Compositor/Document Compositor/IO Compositor/Rendering Compositor/MCP -name "*.swift" ! -name "CompositorApplicationDelegate.swift") \
   Compositor/Rendering/*.c
 

@@ -1,18 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import type {
-  BridgeRequest,
-  ExecuteRequest,
-  JsonObject,
-  JsonValue,
-  Operation,
-  OperationResult,
+import {
+  CAPABILITIES,
+  isJsonObject,
+  type BridgeRequest,
+  type ExecuteRequest,
+  type JsonObject,
+  type JsonValue,
+  type Operation,
+  type OperationResult,
 } from "@compositor-mcp/protocol";
-import { CAPABILITIES } from "@compositor-mcp/protocol";
 import { CompositorMcpError } from "./errors.js";
 import type { BridgeTransport } from "./bridge-client.js";
+import { PREVIEW_DIRECTORY } from "./resources.js";
 
 /// A real 1×1 opaque PNG. The mock writes it to the same temp-directory
 /// convention the bridge uses so the inline-image path and
@@ -22,7 +23,7 @@ const MOCK_PREVIEW_PNG = Buffer.from(
   "base64",
 );
 
-interface MockLayer {
+export interface MockLayer {
   id: string;
   name: string;
   visible: boolean;
@@ -44,14 +45,14 @@ interface MockLayer {
   fill: MockSelection | null;
 }
 
-interface MockSelection {
+export interface MockSelection {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-interface MockDocument {
+export interface MockDocument {
   id: string;
   width: number;
   height: number;
@@ -77,7 +78,17 @@ export class MockBridgeTransport implements BridgeTransport {
       case "ping":
         return { ok: true, mock: true, revision: this.revision };
       case "capabilities":
-        return CAPABILITIES as unknown as JsonValue;
+        // Same envelope the real router answers — { protocol, implemented,
+        // revision } — with the full catalogue attached for the
+        // compositor://capabilities resource.
+        return {
+          protocol: "compositor-bridge/1",
+          implemented: CAPABILITIES.filter((capability) => capability.status === "implemented")
+            .map((capability) => capability.name)
+            .sort(),
+          revision: this.revision,
+          catalogue: CAPABILITIES,
+        } as unknown as JsonValue;
       case "state":
         return this.state();
       case "execute":
@@ -152,6 +163,7 @@ export class MockBridgeTransport implements BridgeTransport {
       dryRun: false,
       atomic: request.atomic ?? true,
       rolledBack,
+      mutated: this.revision !== beforeRevision,
       revision: this.revision,
       results,
       state: this.state(),
@@ -215,9 +227,8 @@ export class MockBridgeTransport implements BridgeTransport {
         const document = this.requireDocument();
         const width = requiredNumber(args, "width");
         const height = requiredNumber(args, "height");
-        if (Math.round(width) < 1 || Math.round(width) > 30_000 || Math.round(height) < 1 || Math.round(height) > 30_000) {
-          throw new CompositorMcpError("invalid_arguments", "Document dimensions must be between 1 and 30,000 pixels.");
-        }
+        checkBounds(Math.round(width), "Document dimensions", 1, 30_000, " pixels");
+        checkBounds(Math.round(height), "Document dimensions", 1, 30_000, " pixels");
         const anchor = optionalString(args, "anchor") ?? "centre";
         const anchorIndex = CANVAS_ANCHORS.indexOf(anchor);
         if (anchorIndex < 0) throw new CompositorMcpError("invalid_arguments", `Unknown anchor: ${anchor}`);
@@ -236,16 +247,12 @@ export class MockBridgeTransport implements BridgeTransport {
         const document = this.requireDocument();
         const width = requiredNumber(args, "width");
         const height = requiredNumber(args, "height");
-        if (Math.round(width) < 1 || Math.round(width) > 30_000 || Math.round(height) < 1 || Math.round(height) > 30_000) {
-          throw new CompositorMcpError("invalid_arguments", "Document dimensions must be between 1 and 30,000 pixels.");
-        }
+        checkBounds(Math.round(width), "Document dimensions", 1, 30_000, " pixels");
+        checkBounds(Math.round(height), "Document dimensions", 1, 30_000, " pixels");
         if (Math.round(width) * Math.round(height) > 100_000_000) {
           throw new CompositorMcpError("invalid_arguments", "This project exceeds the supported canvas, layer, file-size, or 100-megapixel image limit.");
         }
-        const resolution = optionalNumber(args, "resolution");
-        if (resolution !== undefined && (resolution < 1 || resolution > 2400)) {
-          throw new CompositorMcpError("invalid_arguments", "resolution must be between 1 and 2,400 DPI.");
-        }
+        const resolution = boundedNumber(args, "resolution", 1, 2400, " DPI");
         const sx = Math.round(width) / document.width;
         const sy = Math.round(height) / document.height;
         for (const layer of document.layers) {
@@ -262,26 +269,10 @@ export class MockBridgeTransport implements BridgeTransport {
       }
       case "layer.addBlank": {
         const document = this.requireDocument();
-        const id = randomUUID();
-        const layer: MockLayer = {
-          id,
-          name: optionalString(args, "name") ?? `Layer ${document.layers.length + 1}`,
-          visible: true,
-          opacity: 1,
-          blendMode: "Normal",
-          parentId: null,
-          group: false,
-          transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
-          mask: false,
-          shape: false,
-          adjustment: false,
-          adjustmentKind: null,
-          adjustmentParameters: null,
-          fill: null,
-        };
+        const layer = mockLayer(document, { name: optionalString(args, "name") ?? `Layer ${document.layers.length + 1}` });
         document.layers.push(layer);
-        document.activeLayerId = id;
-        document.selectedLayerIds = [id];
+        document.activeLayerId = layer.id;
+        document.selectedLayerIds = [layer.id];
         this.revision += 1;
         return layer as unknown as JsonValue;
       }
@@ -289,33 +280,21 @@ export class MockBridgeTransport implements BridgeTransport {
         const document = this.requireDocument();
         const selected = new Set(document.selectedLayerIds);
         if (selected.size === 0) throw new CompositorMcpError("layer_required", "Select at least one layer first.");
-        const id = randomUUID();
         let topIndex = -1;
         document.layers.forEach((layer, index) => {
           if (selected.has(layer.id)) topIndex = index;
         });
-        const group: MockLayer = {
-          id,
+        const group = mockLayer(document, {
           name: optionalString(args, "name") ?? "Folder 1",
-          visible: true,
-          opacity: 1,
-          blendMode: "Normal",
           parentId: document.layers[topIndex]?.parentId ?? null,
           group: true,
-          transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
-          mask: false,
-          shape: false,
-          adjustment: false,
-          adjustmentKind: null,
-          adjustmentParameters: null,
-          fill: null,
-        };
+        });
         document.layers.splice(topIndex + 1, 0, group);
         for (const layer of document.layers) {
-          if (selected.has(layer.id)) layer.parentId = id;
+          if (selected.has(layer.id)) layer.parentId = group.id;
         }
-        document.activeLayerId = id;
-        document.selectedLayerIds = [id];
+        document.activeLayerId = group.id;
+        document.selectedLayerIds = [group.id];
         this.revision += 1;
         return group as unknown as JsonValue;
       }
@@ -363,14 +342,13 @@ export class MockBridgeTransport implements BridgeTransport {
         if (!isUsableDistortCorners(corners)) {
           throw new CompositorMcpError("invalid_arguments", "corners must describe a convex, non-degenerate quadrilateral.");
         }
-        const xs = corners.map((corner) => corner.x);
-        const ys = corners.map((corner) => corner.y);
-        const left = Math.floor(Math.min(...xs));
-        const top = Math.floor(Math.min(...ys));
+        const bounds = pointsBounds(corners);
+        const left = Math.floor(bounds.left);
+        const top = Math.floor(bounds.top);
         layer.transform.x = left;
         layer.transform.y = top;
-        layer.transform.width = Math.ceil(Math.max(...xs)) - left;
-        layer.transform.height = Math.ceil(Math.max(...ys)) - top;
+        layer.transform.width = Math.ceil(bounds.right) - left;
+        layer.transform.height = Math.ceil(bounds.bottom) - top;
         layer.transform.rotation = 0;
         this.revision += 1;
         return layer as unknown as JsonValue;
@@ -392,9 +370,7 @@ export class MockBridgeTransport implements BridgeTransport {
       case "layer.featherMask": {
         const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
         const radius = requiredNumber(args, "radius");
-        if (radius < 0 || radius > 10_000) {
-          throw new CompositorMcpError("invalid_arguments", "radius must be between 0 and 10,000 pixels.");
-        }
+        checkBounds(radius, "radius", 0, 10_000, " pixels");
         if (!layer.mask) throw new CompositorMcpError("not_found", "Layer mask not found.");
         this.revision += 1;
         return { layerId: layer.id, radius, hasMask: true };
@@ -426,15 +402,13 @@ export class MockBridgeTransport implements BridgeTransport {
         return { id: layer.id, visible: layer.visible };
       }
       case "layer.delete": {
+        const layer = this.requireLayer(this.resolveLayerId(requiredString(args, "layerId")));
         const document = this.requireDocument();
-        const id = this.resolveLayerId(requiredString(args, "layerId"));
-        const index = document.layers.findIndex((layer) => layer.id === id);
-        if (index < 0) throw new CompositorMcpError("layer_not_found", `Layer not found: ${id}`);
-        document.layers.splice(index, 1);
+        document.layers.splice(document.layers.indexOf(layer), 1);
         document.activeLayerId = document.layers.length > 0 ? document.layers[document.layers.length - 1]?.id ?? null : null;
         document.selectedLayerIds = document.activeLayerId ? [document.activeLayerId] : [];
         this.revision += 1;
-        return { deletedLayerId: id };
+        return { deletedLayerId: layer.id };
       }
       case "selection.all": {
         const document = this.requireDocument();
@@ -464,12 +438,9 @@ export class MockBridgeTransport implements BridgeTransport {
         if (points.length < 3) {
           throw new CompositorMcpError("invalid_arguments", "points must be an array of 3 to 10,000 {x, y} points.");
         }
-        const xs = points.map((point) => point.x);
-        const ys = points.map((point) => point.y);
-        const left = Math.min(...xs);
-        const top = Math.min(...ys);
+        const bounds = pointsBounds(points);
         this.combineSelection(
-          { x: left, y: top, width: Math.max(...xs) - left, height: Math.max(...ys) - top },
+          { x: bounds.left, y: bounds.top, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top },
           selectionMode(args),
         );
         this.revision += 1;
@@ -482,10 +453,7 @@ export class MockBridgeTransport implements BridgeTransport {
         if (x < 0 || y < 0 || x >= document.width || y >= document.height) {
           throw new CompositorMcpError("invalid_arguments", "x and y must lie inside the canvas.");
         }
-        const tolerance = optionalNumber(args, "tolerance") ?? 32;
-        if (tolerance < 0 || tolerance > 255) {
-          throw new CompositorMcpError("invalid_arguments", "tolerance must be between 0 and 255.");
-        }
+        const tolerance = boundedNumber(args, "tolerance", 0, 255) ?? 32;
         optionalBoolean(args, "contiguous");
         optionalBoolean(args, "sampleAllLayers");
         const sampleSize = optionalString(args, "sampleSize") ?? "Point Sample";
@@ -525,27 +493,12 @@ export class MockBridgeTransport implements BridgeTransport {
       case "paint.spotHeal":
       case "paint.clone":
       case "paint.blur": {
-        const document = this.requireDocument();
-        const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
-        if (!layer || document.selectedLayerIds.length !== 1) {
-          throw new CompositorMcpError("layer_required", "Select exactly one layer to paint on.");
-        }
-        if (layer.group) {
-          throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be painted.");
-        }
+        const { document, layer } = this.requirePaintTarget();
         const points = strokePoints(args);
-        const diameter = optionalNumber(args, "diameter") ?? 40;
-        if (diameter < 1 || diameter > 2000) {
-          throw new CompositorMcpError("invalid_arguments", "diameter must be between 1 and 2,000 pixels.");
-        }
-        const hardness = optionalNumber(args, "hardness") ?? 1;
-        if (hardness < 0 || hardness > 1) {
-          throw new CompositorMcpError("invalid_arguments", "hardness must be between 0 and 1.");
-        }
-        const strength = optionalNumber(args, operation.name === "paint.blur" ? "strength" : "opacity") ?? 1;
-        if (strength < 0.01 || strength > 1) {
-          throw new CompositorMcpError("invalid_arguments", `${operation.name === "paint.blur" ? "strength" : "opacity"} must be between 0.01 and 1.`);
-        }
+        const diameter = boundedNumber(args, "diameter", 1, 2000, " pixels") ?? 40;
+        const hardness = boundedNumber(args, "hardness", 0, 1) ?? 1;
+        const strengthKey = operation.name === "paint.blur" ? "strength" : "opacity";
+        const strength = boundedNumber(args, strengthKey, 0.01, 1) ?? 1;
         switch (operation.name) {
           case "paint.brushStroke": {
             const mode = optionalString(args, "mode") ?? "paint";
@@ -587,14 +540,7 @@ export class MockBridgeTransport implements BridgeTransport {
         return { applied: true, layerId: layer.id, mask: false, points: points.length, bounds: boundsJson(bounds) };
       }
       case "paint.gradient": {
-        const document = this.requireDocument();
-        const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
-        if (!layer || document.selectedLayerIds.length !== 1) {
-          throw new CompositorMcpError("layer_required", "Select exactly one layer to paint on.");
-        }
-        if (layer.group) {
-          throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be painted.");
-        }
+        const { document, layer } = this.requirePaintTarget();
         const start = requiredPoint(args, "start");
         const end = requiredPoint(args, "end");
         const shape = optionalString(args, "shape") ?? "Linear";
@@ -605,10 +551,7 @@ export class MockBridgeTransport implements BridgeTransport {
         if (!GRADIENT_STYLES.includes(style)) {
           throw new CompositorMcpError("invalid_arguments", "style must be Foreground to Background or Foreground to Transparent.");
         }
-        const opacity = optionalNumber(args, "opacity") ?? 1;
-        if (opacity < 0 || opacity > 1) {
-          throw new CompositorMcpError("invalid_arguments", "opacity must be between 0 and 1.");
-        }
+        const opacity = boundedNumber(args, "opacity", 0, 1) ?? 1;
         optionalBoolean(args, "reversed");
         const stops = args["stops"];
         if (stops !== undefined && stops !== null) {
@@ -616,10 +559,10 @@ export class MockBridgeTransport implements BridgeTransport {
             throw new CompositorMcpError("invalid_arguments", "stops must be an array of 2 to 32 colour stops.");
           }
           for (const stop of stops) {
-            if (stop === null || typeof stop !== "object" || Array.isArray(stop)) {
+            if (!isJsonObject(stop)) {
               throw new CompositorMcpError("invalid_arguments", "stops must contain {offset, color} entries.");
             }
-            const { offset, color } = stop as JsonObject;
+            const { offset, color } = stop;
             if (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0 || offset > 1 || typeof color !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(color)) {
               throw new CompositorMcpError("invalid_arguments", "stops must contain {offset, color} entries with offset between 0 and 1.");
             }
@@ -646,13 +589,9 @@ export class MockBridgeTransport implements BridgeTransport {
         const y = requiredNumber(args, "y");
         const width = requiredNumber(args, "width");
         const height = requiredNumber(args, "height");
-        if (Math.round(width) < 1 || Math.round(width) > 30_000 || Math.round(height) < 1 || Math.round(height) > 30_000) {
-          throw new CompositorMcpError("invalid_arguments", "width and height must be between 1 and 30,000 pixels.");
-        }
-        const cornerRadius = optionalNumber(args, "cornerRadius") ?? 0;
-        if (cornerRadius < 0 || cornerRadius > 15_000) {
-          throw new CompositorMcpError("invalid_arguments", "cornerRadius must be between 0 and 15,000 pixels.");
-        }
+        checkBounds(Math.round(width), "width and height", 1, 30_000, " pixels");
+        checkBounds(Math.round(height), "width and height", 1, 30_000, " pixels");
+        const cornerRadius = boundedNumber(args, "cornerRadius", 0, 15_000, " pixels") ?? 0;
         if (Math.round(width) * Math.round(height) > 100_000_000) {
           throw new CompositorMcpError("invalid_arguments", "That shape is too large. A shape can cover up to 100 megapixels.");
         }
@@ -666,22 +605,12 @@ export class MockBridgeTransport implements BridgeTransport {
           name = `${kind} ${number}`;
         }
         const active = document.layers.find((candidate) => candidate.id === document.activeLayerId);
-        const layer: MockLayer = {
-          id: randomUUID(),
+        const layer = mockLayer(document, {
           name,
-          visible: true,
-          opacity: 1,
-          blendMode: "Normal",
           parentId: active?.group === true ? active.id : active?.parentId ?? null,
-          group: false,
           transform: { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height), rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
-          mask: false,
           shape: true,
-          adjustment: false,
-          adjustmentKind: null,
-          adjustmentParameters: null,
-          fill: null,
-        };
+        });
         const index = active ? document.layers.indexOf(active) + 1 : document.layers.length;
         document.layers.splice(index, 0, layer);
         document.activeLayerId = layer.id;
@@ -699,22 +628,13 @@ export class MockBridgeTransport implements BridgeTransport {
         const active = document.layers.find((candidate) => candidate.id === document.activeLayerId);
         // Mirrors addAdjustment: inserts above the active layer, adopts its parent, and
         // becomes the active layer; the layer name defaults to the kind.
-        const layer: MockLayer = {
-          id: randomUUID(),
+        const layer = mockLayer(document, {
           name: optionalString(args, "name") ?? kind,
-          visible: true,
-          opacity: 1,
-          blendMode: "Normal",
           parentId: active?.group === true ? active.id : active?.parentId ?? null,
-          group: false,
-          transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
-          mask: false,
-          shape: false,
           adjustment: true,
           adjustmentKind: kind,
           adjustmentParameters: parameters ?? {},
-          fill: null,
-        };
+        });
         const index = active ? document.layers.indexOf(active) + 1 : document.layers.length;
         document.layers.splice(index, 0, layer);
         document.activeLayerId = layer.id;
@@ -734,11 +654,11 @@ export class MockBridgeTransport implements BridgeTransport {
         if (layer.adjustmentKind !== kind) {
           throw new CompositorMcpError("invalid_arguments", `kind must match the layer's adjustment kind (${layer.adjustmentKind}).`);
         }
-        const parameters = args["parameters"];
-        if (parameters === undefined || parameters === null || typeof parameters !== "object" || Array.isArray(parameters)) {
+        const parameters = optionalObject(args, "parameters");
+        if (parameters === undefined) {
           throw new CompositorMcpError("invalid_arguments", "parameters is required and must be an object.");
         }
-        layer.adjustmentParameters = { ...layer.adjustmentParameters, ...(parameters as JsonObject) };
+        layer.adjustmentParameters = { ...layer.adjustmentParameters, ...parameters };
         this.revision += 1;
         return layer as unknown as JsonValue;
       }
@@ -793,11 +713,10 @@ export class MockBridgeTransport implements BridgeTransport {
         const document = this.requireDocument();
         // Same convention the bridge uses: a full-resolution PNG under
         // <tmp>/Compositor-MCP/preview-<uuid>.png, returning path + dimensions.
-        const directory = path.join(os.tmpdir(), "Compositor-MCP");
-        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-        const destination = path.join(directory, `preview-${randomUUID()}.png`);
+        await fs.mkdir(PREVIEW_DIRECTORY, { recursive: true, mode: 0o700 });
+        const destination = path.join(PREVIEW_DIRECTORY, `preview-${randomUUID()}.png`);
         await fs.writeFile(destination, this.previewImage, { mode: 0o600 });
-        return { path: destination, width: document.width, height: document.height };
+        return { path: destination, width: document.width, height: document.height, mediaType: "image/png" };
       }
       case "history.undo":
       case "history.redo":
@@ -884,6 +803,20 @@ export class MockBridgeTransport implements BridgeTransport {
     return layer;
   }
 
+  /// The document plus the single selected pixel layer a stroke or gradient
+  /// lands on — the paint-target gate shared by the paint.* operations.
+  private requirePaintTarget(): { document: MockDocument; layer: MockLayer } {
+    const document = this.requireDocument();
+    const layer = document.layers.find((candidate) => candidate.id === document.activeLayerId);
+    if (!layer || document.selectedLayerIds.length !== 1) {
+      throw new CompositorMcpError("layer_required", "Select exactly one layer to paint on.");
+    }
+    if (layer.group) {
+      throw new CompositorMcpError("pixel_edit_unavailable", "The active layer or mask cannot be painted.");
+    }
+    return { document, layer };
+  }
+
   /// The layer a filter lands on, mirroring the bridge's requireFilterTarget: one selected
   /// pixel layer (groups refused) and, for Content-Aware Fill, a live selection.
   private filterTarget(document: MockDocument, kind: string): MockLayer {
@@ -899,6 +832,29 @@ export class MockBridgeTransport implements BridgeTransport {
     }
     return layer;
   }
+}
+
+/// A fresh layer record with the defaults every insertion path shares —
+/// callers override the fields their operation sets (name, parent, flags,
+/// transform). The frame defaults to the full canvas.
+function mockLayer(document: MockDocument, overrides: Partial<MockLayer> = {}): MockLayer {
+  return {
+    id: randomUUID(),
+    name: "Layer",
+    visible: true,
+    opacity: 1,
+    blendMode: "Normal",
+    parentId: null,
+    group: false,
+    transform: { x: 0, y: 0, width: document.width, height: document.height, rotation: 0, flipX: false, flipY: false, sampling: "High quality" },
+    mask: false,
+    shape: false,
+    adjustment: false,
+    adjustmentKind: null,
+    adjustmentParameters: null,
+    fill: null,
+    ...overrides,
+  };
 }
 
 function requiredString(object: JsonObject, key: string): string {
@@ -917,6 +873,24 @@ function optionalString(object: JsonObject, key: string): string | undefined {
 function requiredNumber(object: JsonObject, key: string): number {
   const value = object[key];
   if (typeof value !== "number" || !Number.isFinite(value)) throw new CompositorMcpError("invalid_arguments", `${key} must be a finite number.`);
+  return value;
+}
+
+const formatBound = (value: number): string => value.toLocaleString("en-US");
+
+/// "<label> must be between <min> and <max><unit>." — the shared range error
+/// behind the geometry and paint argument guards.
+function checkBounds(value: number, label: string, minimum: number, maximum: number, unit = ""): void {
+  if (value < minimum || value > maximum) {
+    throw new CompositorMcpError("invalid_arguments", `${label} must be between ${formatBound(minimum)} and ${formatBound(maximum)}${unit}.`);
+  }
+}
+
+/// Optional numeric argument plus a range check; an absent key passes undefined
+/// through for the caller's default.
+function boundedNumber(object: JsonObject, key: string, minimum: number, maximum: number, unit = ""): number | undefined {
+  const value = optionalNumber(object, key);
+  if (value !== undefined) checkBounds(value, key, minimum, maximum, unit);
   return value;
 }
 
@@ -951,10 +925,10 @@ function optionalBoolean(object: JsonObject, key: string): boolean | undefined {
 function optionalObject(object: JsonObject, key: string): JsonObject | undefined {
   const value = object[key];
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) {
+  if (!isJsonObject(value)) {
     throw new CompositorMcpError("invalid_arguments", `${key} must be an object.`);
   }
-  return value as JsonObject;
+  return value;
 }
 
 interface Point {
@@ -964,10 +938,10 @@ interface Point {
 
 function requiredPoint(object: JsonObject, key: string): Point {
   const value = object[key];
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isJsonObject(value)) {
     throw new CompositorMcpError("invalid_arguments", `${key} must be an {x, y} point.`);
   }
-  const { x, y } = value as JsonObject;
+  const { x, y } = value;
   if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
     throw new CompositorMcpError("invalid_arguments", `${key} must be an {x, y} point.`);
   }
@@ -990,16 +964,31 @@ function optionalHexColor(object: JsonObject, key: string): void {
   }
 }
 
+/// Bounding box of a point list in one pass — a Math.min(...points) spread over
+/// a schema-legal 100,000-point stroke would overflow the argument limit.
+function pointsBounds(points: Point[]): { left: number; top: number; right: number; bottom: number } {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const point of points) {
+    if (point.x < left) left = point.x;
+    if (point.y < top) top = point.y;
+    if (point.x > right) right = point.x;
+    if (point.y > bottom) bottom = point.y;
+  }
+  return { left, top, right, bottom };
+}
+
 /// Approximate painted coverage: the point bounds grown by the brush radius, clipped to
 /// the canvas, then to the active selection like the real stroke's selection clip.
 /// Null when nothing would land — the no-op stroke outcome.
 function strokeBounds(points: Point[], radius: number, document: MockDocument): MockSelection | null {
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  let left = Math.max(0, Math.min(...xs) - radius);
-  let top = Math.max(0, Math.min(...ys) - radius);
-  let right = Math.min(document.width, Math.max(...xs) + radius);
-  let bottom = Math.min(document.height, Math.max(...ys) + radius);
+  const bounds = pointsBounds(points);
+  let left = Math.max(0, bounds.left - radius);
+  let top = Math.max(0, bounds.top - radius);
+  let right = Math.min(document.width, bounds.right + radius);
+  let bottom = Math.min(document.height, bounds.bottom + radius);
   if (document.selection) {
     const selection = document.selection;
     const selRight = selection.x + selection.width;
@@ -1025,10 +1014,10 @@ function requiredPoints(object: JsonObject, key: string): Point[] {
     throw new CompositorMcpError("invalid_arguments", `${key} must be an array of {x, y} points.`);
   }
   return value.map((item) => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    if (!isJsonObject(item)) {
       throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
     }
-    const { x, y } = item as JsonObject;
+    const { x, y } = item;
     if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
       throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
     }
@@ -1041,16 +1030,7 @@ function requiredCorners(object: JsonObject, key: string): Point[] {
   if (!Array.isArray(value) || value.length !== 4) {
     throw new CompositorMcpError("invalid_arguments", `${key} must be an array of four points.`);
   }
-  return value.map((item) => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) {
-      throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
-    }
-    const { x, y } = item as JsonObject;
-    if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
-      throw new CompositorMcpError("invalid_arguments", `${key} must contain {x, y} points.`);
-    }
-    return { x, y };
-  });
+  return requiredPoints(object, key);
 }
 
 /// Same convex, non-degenerate quadrilateral check as upstream `DistortWarp.isUsable`.

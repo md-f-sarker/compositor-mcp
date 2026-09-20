@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { JsonObject, JsonValue } from "@compositor-mcp/protocol";
-import { SocketBridgeTransport, type BridgeTransport } from "./bridge-client.js";
+import { isJsonObject, type JsonObject, type JsonValue } from "@compositor-mcp/protocol";
+import { SocketBridgeTransport, defaultDiscoveryPath, type BridgeTransport } from "./bridge-client.js";
 import { normaliseError } from "./errors.js";
 import { MockBridgeTransport } from "./mock-bridge.js";
 
@@ -86,16 +86,14 @@ async function doctor(args: string[], io: CliIo): Promise<number> {
       lines.push("discovery file: skipped (COMPOSITOR_MCP_MOCK=1)");
     }
 
-    const ping = asObject(await transport.request("ping"));
-    const capabilitiesValue = await transport.request("capabilities");
-    // The real bridge answers { protocol, implemented: [...], revision }; the
-    // mock transport returns the raw catalogue array instead.
-    const capabilities = asObject(capabilitiesValue);
-    const implemented = Array.isArray(capabilitiesValue)
-      ? capabilitiesValue.filter((entry) => asObject(entry as JsonValue)["status"] === "implemented").length
-      : Array.isArray(capabilities["implemented"])
-        ? capabilities["implemented"].length
-        : 0;
+    const [pingValue, capabilitiesValue] = await Promise.all([
+      transport.request("ping"),
+      transport.request("capabilities"),
+    ]);
+    const ping = asObjectOrEmpty(pingValue);
+    // Real bridge and mock both answer { protocol, implemented: [...], revision }.
+    const capabilities = asObjectOrEmpty(capabilitiesValue);
+    const implemented = Array.isArray(capabilities["implemented"]) ? capabilities["implemented"].length : 0;
     const revision = typeof capabilities["revision"] === "number" ? capabilities["revision"] : ping["revision"];
     const appVersion = typeof ping["appVersion"] === "string" ? ping["appVersion"] : "unknown";
     const protocol = typeof ping["protocol"] === "string" ? ping["protocol"] : "unknown";
@@ -241,7 +239,7 @@ async function configure(args: string[], io: CliIo): Promise<number> {
 }
 
 function configDir(env: NodeJS.ProcessEnv): string {
-  return env.COMPOSITOR_MCP_CONFIG_DIR ?? path.join(os.homedir(), "Library", "Application Support", "Compositor", "MCP");
+  return env.COMPOSITOR_MCP_CONFIG_DIR ?? path.dirname(defaultDiscoveryPath());
 }
 
 function expandHome(input: string, env: NodeJS.ProcessEnv): string {
@@ -251,6 +249,6 @@ function expandHome(input: string, env: NodeJS.ProcessEnv): string {
   return input;
 }
 
-function asObject(value: JsonValue): JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+function asObjectOrEmpty(value: JsonValue): JsonObject {
+  return isJsonObject(value) ? value : {};
 }

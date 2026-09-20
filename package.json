@@ -19,7 +19,8 @@
     "parity": "node scripts/check-capability-parity.mjs",
     "docs:capabilities": "node scripts/generate-capability-docs.mjs",
     "docs:check": "node scripts/generate-capability-docs.mjs --check",
-    "pack": "npm pack -w compositor-mcp"
+    "pack": "npm pack -w compositor-mcp",
+    "pack:smoke": "node scripts/pack-smoke.mjs"
   },
   "engines": {
     "node": ">=20.12"

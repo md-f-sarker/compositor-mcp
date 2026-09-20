@@ -9,17 +9,35 @@ const normalise = (value: string): string =>
 
 const tokens = (value: string): string[] => normalise(value).split(/\s+/).filter(Boolean);
 
-function scoreCapability(query: string, entry: Capability): number {
+/// A capability with every scored field pre-normalised — computed once at load
+/// so a query never re-normalises all 62 catalogue entries.
+interface SearchRecord {
+  capability: Capability;
+  name: string;
+  title: string;
+  aliases: string[];
+  tags: string[];
+  description: string;
+  category: string;
+}
+
+const SEARCH_RECORDS: SearchRecord[] = CAPABILITIES.map((capability) => ({
+  capability,
+  name: normalise(capability.name),
+  title: normalise(capability.title),
+  aliases: capability.aliases.map(normalise),
+  tags: capability.tags.map(normalise),
+  description: normalise(capability.description),
+  category: normalise(capability.category),
+}));
+
+function scoreCapability(query: string, record: SearchRecord): number {
+  const entry = record.capability;
   const q = normalise(query);
   if (!q) return entry.status === "implemented" ? 1 : 0.5;
 
   const queryTokens = tokens(q);
-  const name = normalise(entry.name);
-  const title = normalise(entry.title);
-  const aliases = entry.aliases.map(normalise);
-  const tags = entry.tags.map(normalise);
-  const description = normalise(entry.description);
-  const category = normalise(entry.category);
+  const { name, title, aliases, tags, description, category } = record;
 
   let score = 0;
   if (name === q) score += 100;
@@ -50,9 +68,9 @@ export function searchCapabilities(query: string, options: SearchOptions = {}): 
   const includeSchemas = options.includeSchemas ?? true;
   const includePlanned = options.includePlanned ?? false;
 
-  return CAPABILITIES
-    .filter((entry) => includePlanned || entry.status === "implemented")
-    .map((entry) => ({ score: scoreCapability(query, entry), capability: entry }))
+  return SEARCH_RECORDS
+    .filter((record) => includePlanned || record.capability.status === "implemented")
+    .map((record) => ({ score: scoreCapability(query, record), capability: record.capability }))
     .filter((hit) => hit.score > 0)
     .sort((a, b) => b.score - a.score || a.capability.name.localeCompare(b.capability.name))
     .slice(0, limit)

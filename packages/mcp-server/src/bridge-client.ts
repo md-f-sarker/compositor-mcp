@@ -19,7 +19,9 @@ export interface BridgeTransport {
   request(method: BridgeRequest["method"], params?: JsonObject): Promise<JsonValue>;
 }
 
-function defaultDiscoveryPath(): string {
+/// The bridge discovery file's default location; the CLI derives its config
+/// directory from the same path so both halves agree on the convention.
+export function defaultDiscoveryPath(): string {
   return path.join(os.homedir(), "Library", "Application Support", "Compositor", "MCP", "bridge.json");
 }
 
@@ -140,16 +142,20 @@ export class SocketBridgeTransport implements BridgeTransport {
       socket.setNoDelay(true);
       socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`, "utf8"));
       socket.on("data", (chunk: Buffer) => {
-        total += chunk.length;
+        // The response is a single newline-terminated JSON line: only the chunk
+        // carrying the newline needs scanning, the rest are buffered untouched
+        // and concatenated once instead of re-concatenating per chunk.
+        const newline = chunk.indexOf(0x0a);
+        total += newline === -1 ? chunk.length : newline;
         if (total > MAX_RESPONSE_BYTES) {
           finish(() => reject(new CompositorMcpError("bridge_response_too_large", "Compositor bridge response exceeded 32 MiB.")));
           return;
         }
-        chunks.push(chunk);
-        const combined = Buffer.concat(chunks);
-        const newline = combined.indexOf(0x0a);
-        if (newline === -1) return;
-        const line = combined.subarray(0, newline).toString("utf8");
+        if (newline === -1) {
+          chunks.push(chunk);
+          return;
+        }
+        const line = Buffer.concat([...chunks, chunk.subarray(0, newline)]).toString("utf8");
         finish(() => {
           try {
             const parsed = JSON.parse(line) as BridgeResponse;
