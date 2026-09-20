@@ -217,3 +217,31 @@ extension CompositorMCPJSON {
     static func cgFloat(_ value: CGFloat) -> Self { .number(Double(value)) }
     static func uuid(_ value: UUID?) -> Self { value.map { .string($0.uuidString) } ?? .null }
 }
+
+/// An `{x, y}` object decoded as a document-space point with finite coordinates.
+/// `message` is the invalid_arguments text thrown when the value is not a point,
+/// so each call site names its own argument.
+func parsePoint(_ value: CompositorMCPJSON, message: String) throws -> CGPoint {
+    guard let point = value.object,
+          let x = point["x"]?.number, x.isFinite,
+          let y = point["y"]?.number, y.isFinite else {
+        throw CompositorMCPCommandError.invalid(message)
+    }
+    return CGPoint(x: x, y: y)
+}
+
+extension CaseIterable where Self: RawRepresentable, RawValue == String {
+    /// The case whose raw value matches ignoring case — how the bridge accepts the
+    /// upstream display strings ("Gaussian Blur", "Content-Aware", …).
+    static func matching(_ value: String) -> Self? {
+        allCases.first { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+    }
+}
+
+extension CaseIterable {
+    /// The case whose keyed string property matches ignoring case, for enums whose
+    /// lookup text is not the raw value (`WandSampleSize.title`).
+    static func matching(_ value: String, by keyPath: KeyPath<Self, String>) -> Self? {
+        allCases.first { $0[keyPath: keyPath].caseInsensitiveCompare(value) == .orderedSame }
+    }
+}

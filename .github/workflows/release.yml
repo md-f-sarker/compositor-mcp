@@ -19,14 +19,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run check
-      - name: Build the release tarball
-        run: npm pack -w compositor-mcp --pack-destination /tmp
-      - name: Smoke-test the tarball
-        run: |
-          mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
-          npm init -y >/dev/null
-          npm install /tmp/compositor-mcp-*.tgz
-          ./node_modules/.bin/compositor-mcp --help
+      - name: Smoke-test the packed tarball
+        run: npm run pack:smoke
       - name: Publish to npm
         run: npm publish -w compositor-mcp --provenance
         env:

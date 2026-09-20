@@ -10,10 +10,10 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import type { ExecuteRequest, JsonValue } from "@compositor-mcp/protocol";
+import { isJsonObject, type ExecuteRequest, type JsonValue } from "@compositor-mcp/protocol";
 import type { BridgeTransport } from "./bridge-client.js";
 import { CompositorMcpError, normaliseError } from "./errors.js";
-import { handleExecute, handleSearch, validateExecuteRequest } from "./handlers.js";
+import { handleExecute, handleSearch, inspectRequest, requireDestructiveConfirmation } from "./handlers.js";
 import { registerWorkflowPrompts } from "./prompts.js";
 import { PreviewCache, captureLatestPreview, registerCompositorResources } from "./resources.js";
 
@@ -135,7 +135,12 @@ export function createCompositorMcpServer(transport: BridgeTransport): McpServer
       if (gate !== undefined) return gate;
       try {
         const result = await handleExecute(transport, request);
-        return asToolResult(result, await captureLatestPreview(result, previews));
+        // Only batches that ran preview.render can have produced a render —
+        // skip the result scan for everything else.
+        const previewContent = request.operations.some((operation) => operation.name === "preview.render")
+          ? await captureLatestPreview(result, previews)
+          : [];
+        return asToolResult(result, previewContent);
       } catch (error) {
         return errorToolResult(error);
       }
@@ -162,7 +167,9 @@ function destructiveConfirmationGate(
   server: McpServer,
 ): CallToolResult | InputRequiredResult | undefined {
   try {
-    validateExecuteRequest(request);
+    // Light pass only — name/risk classification. Full schema validation runs
+    // once in handleExecute so it never executes twice per call.
+    requireDestructiveConfirmation(request, inspectRequest(request));
     return undefined;
   } catch (error) {
     if (!(error instanceof CompositorMcpError) || error.code !== "confirmation_required") {
@@ -171,13 +178,10 @@ function destructiveConfirmationGate(
 
     const accepted = acceptedContent(ctx.mcpReq.inputResponses, "confirm", CONFIRM_ELICIT_SCHEMA);
     if (accepted?.confirm === true) {
+      // The accepted answer upgrades the flag; handleExecute performs the
+      // batch's single full validation below.
       request.confirmDestructive = true;
-      try {
-        validateExecuteRequest(request);
-        return undefined;
-      } catch (second) {
-        return errorToolResult(second);
-      }
+      return undefined;
     }
 
     if (ctx.mcpReq.inputResponses !== undefined) {
@@ -218,15 +222,15 @@ function clientSupportsElicitation(ctx: ServerContext, server: McpServer): boole
 
 function destructiveOperations(error: CompositorMcpError): string {
   const details = error.details;
-  if (typeof details === "object" && details !== null && !Array.isArray(details)) {
-    const names = (details as Record<string, JsonValue>)["destructiveOperations"];
+  if (isJsonObject(details)) {
+    const names = details["operations"];
     if (Array.isArray(names) && names.every((name) => typeof name === "string")) return names.join(", ");
   }
   return "the requested operations";
 }
 
 function asToolResult(value: JsonValue, extraContent: ContentBlock[] = []): CallToolResult {
-  const structured = typeof value === "object" && value !== null && !Array.isArray(value) ? value : { result: value };
+  const structured = isJsonObject(value) ? value : { result: value };
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }, ...extraContent],
     structuredContent: structured as Record<string, unknown>,

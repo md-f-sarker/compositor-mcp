@@ -27,27 +27,7 @@ jobs:
       - name: Create representative upstream tree
         run: |
           mkdir -p /tmp/Compositor/Compositor.xcodeproj /tmp/Compositor/Compositor/IO
-          cat > /tmp/Compositor/Compositor/IO/CompositorApplicationDelegate.swift <<'SWIFT'
-          import AppKit
-          import Sparkle
-
-          final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
-              let workspace = ProjectWorkspace()
-              var session: EditorSession { workspace.current.session }
-              var projects: ProjectController { workspace.current.controller }
-              var showEditor: (() -> Void)?
-              let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
-
-              func applicationDidFinishLaunching(_ notification: Notification) {
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [updater] in updater.startUpdater() }
-              }
-
-              func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-                  if !flag { showEditor?() }
-                  return true
-              }
-          }
-          SWIFT
+          cp packages/mcp-server/test/fixtures/AppDelegate.fixture.swift /tmp/Compositor/Compositor/IO/CompositorApplicationDelegate.swift
       - run: ./scripts/install-into-compositor.sh /tmp/Compositor
       - run: ./scripts/install-into-compositor.sh /tmp/Compositor
       - run: test -f /tmp/Compositor/Compositor/MCP/CompositorMCPBridge.swift
@@ -62,12 +42,4 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: npm run build
-      - run: npm pack -w compositor-mcp --pack-destination /tmp
-      - name: Install the tarball into a scratch project
-        run: |
-          mkdir -p /tmp/pack-smoke && cd /tmp/pack-smoke
-          npm init -y >/dev/null
-          npm install /tmp/compositor-mcp-*.tgz
-      - name: The packed CLI runs
-        run: /tmp/pack-smoke/node_modules/.bin/compositor-mcp --help
+      - run: npm run pack:smoke

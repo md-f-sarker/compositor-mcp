@@ -22,32 +22,15 @@ function captureIo(env: NodeJS.ProcessEnv = {}): { io: CliIo; stdout: () => stri
   return { io, stdout: () => stdout.join("\n"), stderr: () => stderr.join("\n") };
 }
 
-const DELEGATE_FIXTURE = `import AppKit
-import Sparkle
-
-final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
-    let workspace = ProjectWorkspace()
-    var session: EditorSession { workspace.current.session }
-    var projects: ProjectController { workspace.current.controller }
-    var showEditor: (() -> Void)?
-    let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [updater] in updater.startUpdater() }
-    }
-
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { showEditor?() }
-        return true
-    }
-}
-`;
+/// The representative upstream delegate the installer patches — shared with
+/// the CI installer smoke test so both exercise the same source file.
+const DELEGATE_FIXTURE = fileURLToPath(new URL("fixtures/AppDelegate.fixture.swift", import.meta.url));
 
 async function makeCompositorTree(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-upstream-"));
   await fs.mkdir(path.join(root, "Compositor.xcodeproj"), { recursive: true });
   await fs.mkdir(path.join(root, "Compositor", "IO"), { recursive: true });
-  await fs.writeFile(path.join(root, "Compositor", "IO", "CompositorApplicationDelegate.swift"), DELEGATE_FIXTURE);
+  await fs.copyFile(DELEGATE_FIXTURE, path.join(root, "Compositor", "IO", "CompositorApplicationDelegate.swift"));
   return root;
 }
 

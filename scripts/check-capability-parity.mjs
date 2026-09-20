@@ -1,28 +1,27 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const catalogue = await readFile(path.join(root, "packages/protocol/src/capabilities.ts"), "utf8");
 const router = await readFile(path.join(root, "compositor/Compositor/MCP/CompositorMCPCommandRouter.swift"), "utf8");
 
-const capabilityChunks = catalogue.split("capability({").slice(1);
-const all = [];
-const entries = [];
-for (const chunk of capabilityChunks) {
-  const match = chunk.match(/\bname:\s*"([^"]+)"/);
-  if (!match) continue;
-  const name = match[1];
-  const status = /\bstatus:\s*"planned"/.test(chunk) ? "planned" : "implemented";
-  const risk = chunk.match(/\brisk:\s*"([^"]+)"/)?.[1] ?? "write";
-  const transactional = !/\btransactional:\s*false/.test(chunk);
-  all.push(name);
-  entries.push({ name, status, risk, transactional });
+// The capability registry is the source of truth — import the built package
+// rather than regex-scraping the TypeScript source (`npm run check` runs
+// build:protocol first).
+const distEntry = path.join(root, "packages/protocol/dist/index.js");
+let registry;
+try {
+  registry = await import(pathToFileURL(distEntry).href);
+} catch (error) {
+  console.error(`Could not load ${distEntry}. Run \`npm run build:protocol\` first.\n${error}`);
+  process.exit(1);
 }
+const { CAPABILITIES } = registry;
 
-const implemented = entries.filter((entry) => entry.status === "implemented");
-const planned = entries.filter((entry) => entry.status === "planned");
+const all = CAPABILITIES.map((entry) => entry.name);
+const implemented = CAPABILITIES.filter((entry) => entry.status === "implemented");
+const planned = CAPABILITIES.filter((entry) => entry.status === "planned");
 
 function swiftSet(name) {
   const match = router.match(new RegExp(`private let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`));

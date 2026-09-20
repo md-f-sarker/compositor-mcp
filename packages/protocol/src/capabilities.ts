@@ -73,6 +73,21 @@ const point = object(
   ["x", "y"],
 );
 
+/// How a selection operation combines with the existing selection — the `mode`
+/// field shared by every selection-mutating operation.
+const selectionMode = string("Selection combination mode.", { enum: ["replace", "add", "subtract"], default: "replace" });
+
+/// The marquee rectangle {x, y, width, height, mode} shared by
+/// selection.rectangle and selection.ellipse.
+const marqueeRect = object(
+  {
+    x: number("Left coordinate."), y: number("Top coordinate."),
+    width: number("Width.", { minimum: 1 }), height: number("Height.", { minimum: 1 }),
+    mode: selectionMode,
+  },
+  ["x", "y", "width", "height"],
+);
+
 const strokePoints = (description: string): JsonSchema => ({
   type: "array",
   description,
@@ -89,7 +104,8 @@ const brushDiameter = number("Brush diameter in document pixels, 1–2000.", {
 const brushHardness = number("Brush hardness from 0 to 1.", { minimum: 0, maximum: 1, default: 1 });
 const brushOpacity = number("Brush opacity from 0.01 to 1.", { minimum: 0.01, maximum: 1, default: 1 });
 
-const hexColor = (description: string): JsonSchema => string(description, { pattern: "^#[0-9A-Fa-f]{6}$" });
+const hexColor = (description: string, extra: Partial<JsonSchema> = {}): JsonSchema =>
+  string(description, { pattern: "^#[0-9A-Fa-f]{6}$", ...extra });
 
 const adjustmentColor = object(
   {
@@ -374,7 +390,7 @@ export const CAPABILITIES: readonly Capability[] = [
         path,
         format: string("Output format.", { enum: ["png", "jpeg"], default: "png" }),
         quality: number("JPEG quality from 0 to 1.", { minimum: 0, maximum: 1, default: 0.85 }),
-        background: string("JPEG background as a six-digit hex colour.", { pattern: "^#[0-9A-Fa-f]{6}$", default: "#FFFFFF" }),
+        background: hexColor("JPEG background as a six-digit hex colour.", { default: "#FFFFFF" }),
       },
       ["path"],
     ),
@@ -745,14 +761,7 @@ export const CAPABILITIES: readonly Capability[] = [
     category: "selection",
     aliases: ["marquee", "rectangular marquee", "select rectangle"],
     tags: ["marquee", "rectangle"],
-    inputSchema: object(
-      {
-        x: number("Left coordinate."), y: number("Top coordinate."),
-        width: number("Width.", { minimum: 1 }), height: number("Height.", { minimum: 1 }),
-        mode: string("Selection combination mode.", { enum: ["replace", "add", "subtract"], default: "replace" }),
-      },
-      ["x", "y", "width", "height"],
-    ),
+    inputSchema: marqueeRect,
     examples: [{ arguments: { x: 40, y: 40, width: 400, height: 300, mode: "replace" } }],
   }),
   capability({
@@ -762,14 +771,7 @@ export const CAPABILITIES: readonly Capability[] = [
     category: "selection",
     aliases: ["elliptical marquee", "select ellipse", "circular selection"],
     tags: ["marquee", "ellipse"],
-    inputSchema: object(
-      {
-        x: number("Left coordinate."), y: number("Top coordinate."),
-        width: number("Width.", { minimum: 1 }), height: number("Height.", { minimum: 1 }),
-        mode: string("Selection combination mode.", { enum: ["replace", "add", "subtract"], default: "replace" }),
-      },
-      ["x", "y", "width", "height"],
-    ),
+    inputSchema: marqueeRect,
     examples: [{ arguments: { x: 100, y: 100, width: 300, height: 300, mode: "add" } }],
   }),
   capability({
@@ -785,7 +787,7 @@ export const CAPABILITIES: readonly Capability[] = [
           type: "array", minItems: 3, maxItems: 10000,
           items: object({ x: number("X coordinate."), y: number("Y coordinate.") }, ["x", "y"]),
         },
-        mode: string("Selection combination mode.", { enum: ["replace", "add", "subtract"], default: "replace" }),
+        mode: selectionMode,
       },
       ["points"],
     ),
@@ -819,7 +821,7 @@ export const CAPABILITIES: readonly Capability[] = [
           default: "Point Sample",
         }),
         sampleAllLayers: boolean("Sample the visible composite instead of only the active layer.", false),
-        mode: string("Selection combination mode.", { enum: ["replace", "add", "subtract"], default: "replace" }),
+        mode: selectionMode,
       },
       ["x", "y"],
     ),

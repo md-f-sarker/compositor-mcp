@@ -39,7 +39,9 @@ enum CompositorMCPRuntimeFiles {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
         let temporary = directory.appendingPathComponent("bridge-\(UUID().uuidString).tmp")
-        try data.write(to: temporary, options: [.atomic])
+        // The UUID name means nothing reads the temp file mid-write; atomicity comes
+        // from the moveItem below, and the chmod must precede it either way.
+        try data.write(to: temporary)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
         _ = try? FileManager.default.removeItem(at: discovery)
         try FileManager.default.moveItem(at: temporary, to: discovery)
@@ -105,6 +107,9 @@ struct CompositorMCPConfiguration: Codable, Sendable {
 final class CompositorMCPPathPolicy {
     private let workspace: ProjectWorkspace
     private(set) var configuration = CompositorMCPConfiguration()
+    /// `allowedRoots` expanded, deduplicated and symlink-resolved once per reload; the
+    /// current project's directory is still appended per call in `allowedRootURLs`.
+    private var configuredRoots: [URL] = []
 
     init(workspace: ProjectWorkspace) {
         self.workspace = workspace
@@ -113,6 +118,8 @@ final class CompositorMCPPathPolicy {
 
     func reload() {
         configuration = CompositorMCPConfiguration.load()
+        configuredRoots = Array(Set(configuration.allowedRoots.map { NSString(string: $0).expandingTildeInPath }))
+            .map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath() }
     }
 
     func authorise(_ suppliedPath: String, forWrite: Bool) throws -> URL {
@@ -137,12 +144,12 @@ final class CompositorMCPPathPolicy {
     }
 
     private func allowedRootURLs() -> [URL] {
-        var paths = configuration.allowedRoots
+        var roots = configuredRoots
         if let project = workspace.current.session.projectURL {
-            paths.append(project.deletingLastPathComponent().path)
+            let path = NSString(string: project.deletingLastPathComponent().path).expandingTildeInPath
+            roots.append(URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath())
         }
-        return Array(Set(paths.map { NSString(string: $0).expandingTildeInPath }))
-            .map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath() }
+        return roots
     }
 
     private func canonicalURL(_ value: URL, forWrite: Bool) -> URL {
@@ -163,26 +170,49 @@ final class CompositorMCPPathPolicy {
 actor CompositorMCPAuditLog {
     static let shared = CompositorMCPAuditLog()
 
-    func append(requestId: String, operation: String, ok: Bool, details: [String: CompositorMCPJSON] = [:]) async {
-        let record: CompositorMCPJSON = .object([
-            "timestamp": .string(ISO8601DateFormatter().string(from: Date())),
-            "requestId": .string(requestId),
-            "operation": .string(operation),
-            "ok": .bool(ok),
-            "details": .object(details)
-        ])
-        guard let data = try? JSONEncoder().encode(record), var line = String(data: data, encoding: .utf8) else { return }
-        line.append("\n")
+    /// One formatter for the whole log; ISO8601DateFormatter is not cheap to build.
+    private let formatter = ISO8601DateFormatter()
+
+    /// The log is kept to the newest ~8 MB; older lines are truncated away on append.
+    private let maxLogBytes = 8 * 1024 * 1024
+
+    /// One execute call's records in a single ensure/open/seek/write/close pass.
+    func append(requestId: String, entries: [(operation: String, ok: Bool, details: [String: CompositorMCPJSON])]) async {
+        var body = ""
+        for entry in entries {
+            let record: CompositorMCPJSON = .object([
+                "timestamp": .string(formatter.string(from: Date())),
+                "requestId": .string(requestId),
+                "operation": .string(entry.operation),
+                "ok": .bool(entry.ok),
+                "details": .object(entry.details)
+            ])
+            guard let data = try? JSONEncoder().encode(record), let line = String(data: data, encoding: .utf8) else { continue }
+            body.append(line)
+            body.append("\n")
+        }
+        guard !body.isEmpty else { return }
         do {
             try CompositorMCPRuntimeFiles.ensureDirectory()
             if !FileManager.default.fileExists(atPath: CompositorMCPRuntimeFiles.auditLog.path) {
                 try Data().write(to: CompositorMCPRuntimeFiles.auditLog)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: CompositorMCPRuntimeFiles.auditLog.path)
             }
-            let handle = try FileHandle(forWritingTo: CompositorMCPRuntimeFiles.auditLog)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data(line.utf8))
-            try handle.close()
+            let incoming = Data(body.utf8)
+            let size = (try? FileManager.default.attributesOfItem(atPath: CompositorMCPRuntimeFiles.auditLog.path))?[.size] as? Int ?? 0
+            if size + incoming.count > maxLogBytes, let log = try? Data(contentsOf: CompositorMCPRuntimeFiles.auditLog) {
+                // Over the cap: rewrite keeping the newest whole lines under maxLogBytes.
+                var tail = (log + incoming).suffix(maxLogBytes)
+                if let newline = tail.firstIndex(of: 0x0a) {
+                    tail = tail.suffix(from: tail.index(after: newline))
+                }
+                try Data(tail).write(to: CompositorMCPRuntimeFiles.auditLog)
+            } else {
+                let handle = try FileHandle(forWritingTo: CompositorMCPRuntimeFiles.auditLog)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: incoming)
+                try handle.close()
+            }
         } catch {
             // Auditing must never break editing. A future UI can surface audit-write failures.
         }
