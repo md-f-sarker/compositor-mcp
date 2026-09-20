@@ -1333,19 +1333,33 @@ final class CompositorMCPCommandRouter {
         }
         values.append(contentsOf: [document.id.uuidString, String(document.width), String(document.height), String(document.resolution)])
         for layer in document.layers {
-            values.append(contentsOf: [
-                layer.id.uuidString, layer.name, String(layer.isVisible), layer.parentID?.uuidString ?? "",
-                String(layer.isGroup), String(layer.opacity), layer.blendMode.rawValue,
-                String(layer.transform.origin.x), String(layer.transform.origin.y), String(layer.transform.size.width),
-                String(layer.transform.size.height), String(layer.transform.rotation), String(layer.transform.flipX), String(layer.transform.flipY),
-                layer.maskSourceID?.uuidString ?? "", String(layer.mask?.isEnabled ?? false), String(layer.mask?.isLinked ?? false)
-            ])
+            values.append(layer.id.uuidString)
+            values.append(layer.name)
+            values.append(String(layer.isVisible))
+            values.append(layer.parentID?.uuidString ?? "")
+            values.append(String(layer.isGroup))
+            values.append(String(layer.opacity))
+            values.append(layer.blendMode.rawValue)
+            values.append(String(describing: layer.transform.origin.x))
+            values.append(String(describing: layer.transform.origin.y))
+            values.append(String(describing: layer.transform.size.width))
+            values.append(String(describing: layer.transform.size.height))
+            values.append(String(describing: layer.transform.rotation))
+            values.append(String(layer.transform.flipX))
+            values.append(String(layer.transform.flipY))
+            values.append(layer.maskSourceID?.uuidString ?? "")
+            values.append(String(layer.mask?.isEnabled ?? false))
+            values.append(String(layer.mask?.isLinked ?? false))
             if let image = layer.asset?.image { values.append(String(ObjectIdentifier(image).hashValue)) }
             if let image = layer.mask?.asset.image { values.append(String(ObjectIdentifier(image).hashValue)) }
         }
         if let selection = session.selection {
             let bounds = selection.path.boundingBoxOfPath
-            values.append(contentsOf: [String(bounds.minX), String(bounds.minY), String(bounds.width), String(bounds.height), String(selection.antialiased)])
+            values.append(String(describing: bounds.minX))
+            values.append(String(describing: bounds.minY))
+            values.append(String(describing: bounds.width))
+            values.append(String(describing: bounds.height))
+            values.append(String(selection.antialiased))
         } else {
             values.append("no-selection")
         }
