@@ -10,7 +10,3 @@ checkout has drifted from that revision.
 "Compositor" is used here to identify the compatible open-source application.
 This project is independent and is not endorsed by the original author unless
 stated otherwise.
-
-DaVinci Resolve and Blackmagic Design are trademarks of Blackmagic Design Pty.
-Ltd. Their AI-assistant integration informed the product direction, but no
-Blackmagic code or assets are included.

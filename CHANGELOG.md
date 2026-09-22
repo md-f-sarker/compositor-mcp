@@ -13,6 +13,10 @@
 - Raised mock-bridge fidelity to the real router: state nests the open document under `document`, layer masks report `{enabled, linked, width, height}` objects or null, missing layers fail with `not_found`, `document.create` returns `{projectId, documentId, activeLayerId}`, `layer.list` returns the `{projectId, documentId, activeLayerId, selectedLayerIds, layers}` envelope, `layer.select` supports `target: "mask"`, and `search` reports `total`/`truncated` alongside `count`.
 - Made validation errors legible: a const-discriminated `oneOf` failure names the discriminator and its valid values (`kind must be one of: …`) or the matched branch's own field issues, and dropped the unenforceable `seed` setting from `filter.apply`'s "Add Noise" kind (Grain's seed remains).
 - Strengthened release checks: the parity script now verifies every implemented operation appears in both the Swift validate and apply dispatch switches, `docs:check` asserts the README states the implemented count, the live bridge driver derives its expected count from the registry, and `pack:smoke` runs the packed package's bundled `install-bridge` against a fixture checkout.
+- Renamed the package and CLI to `compositor-mcp-server` — the `compositor-mcp` npm name was claimed by an unrelated package, so `npx -y compositor-mcp` would have installed it. Added `server.json` for the official MCP registry.
+- Fixed `prompts/get` failing with -32602 when `arguments` is omitted — the MCP spec makes the field optional, so every workflow prompt's args schema now defaults to `{}`.
+- Taught the mock bridge the router's idempotency semantics: a SHA-256 fingerprint of the canonicalized request replays the stored result verbatim, a reused key over a different request fails with `idempotency_conflict`, dry runs are never cached, and the cache evicts oldest-first past 20 keys.
+- Documented the SDK's 10 MiB stdio message cap and the pending-edit, non-transactional and canvas/layer bounds in a new README "Known limits" section, plus a requirements line covering tested clients and protocol revisions.
 
 ## 0.1.0 - 2026-09-19
 

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -23,6 +23,20 @@ const MOCK_PREVIEW_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
 );
+
+/// Deep-sorts object keys so semantically identical requests produce
+/// byte-identical canonical JSON regardless of client key order.
+function sortJsonKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonKeys);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = sortJsonKeys((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
 
 /// The wire shape the real state builder emits for a layer mask
 /// (CompositorMCPState.swift): enabled/linked flags plus the mask asset's size.
@@ -86,6 +100,10 @@ export class MockBridgeTransport implements BridgeTransport {
   /// True while a dry-run validation pass is replaying an operation on a
   /// throwaway document clone — suppresses preview.render's filesystem write.
   private dryRunning = false;
+  /// Idempotency cache keyed like the router's (key → {fingerprint, result}),
+  /// kept smallest-first via idempotencyOrder so only the last 20 live.
+  private readonly idempotencyCache = new Map<string, { fingerprint: string; result: JsonValue }>();
+  private readonly idempotencyOrder: string[] = [];
   private previewImage: Buffer;
 
   constructor(options: { previewImage?: Buffer } = {}) {
@@ -190,6 +208,29 @@ export class MockBridgeTransport implements BridgeTransport {
       throw new CompositorMcpError("invalid_request", "At least one operation is required.");
     }
 
+    // Router order: idempotency lookup runs before the implemented-operation
+    // and precondition checks, so a retry returns its stored result even when
+    // revision drifted since (the point of replaying). Cache misses and
+    // fingerprint mismatches surface exactly like the real bridge.
+    const idempotencyKey = request.idempotencyKey;
+    let fingerprint: string | undefined;
+    if (idempotencyKey !== undefined) {
+      if (idempotencyKey.length < 8 || idempotencyKey.length > 200) {
+        throw new CompositorMcpError("invalid_idempotency_key", "idempotencyKey must be between 8 and 200 characters.");
+      }
+      fingerprint = this.idempotencyFingerprint(request);
+      const cached = this.idempotencyCache.get(idempotencyKey);
+      if (cached !== undefined) {
+        if (cached.fingerprint !== fingerprint) {
+          throw new CompositorMcpError(
+            "idempotency_conflict",
+            "The idempotency key was already used for a different request.",
+          );
+        }
+        return cached.result;
+      }
+    }
+
     // The router checks every operation's precondition up front — a stale
     // revision fails the whole request before the destructive gate runs.
     for (const operation of operations) {
@@ -259,7 +300,7 @@ export class MockBridgeTransport implements BridgeTransport {
       rolledBack = true;
     }
 
-    return {
+    const result = {
       ok: !failed,
       dryRun: false,
       atomic: request.atomic ?? true,
@@ -269,6 +310,34 @@ export class MockBridgeTransport implements BridgeTransport {
       results,
       state: this.state(),
     } as unknown as JsonValue;
+    // Like the router: real-run results are stored under the key (failures
+    // included — the whole envelope replays); the dry-run path above returns
+    // early and is never cached.
+    if (idempotencyKey !== undefined && fingerprint !== undefined) {
+      this.cacheIdempotentResult(result, fingerprint, idempotencyKey);
+    }
+    return result;
+  }
+
+  /// CompositorMCPCommandRouter.idempotencyFingerprint: canonical JSON
+  /// (sorted keys, deep) of the whole request, hashed — two requests sharing
+  /// an idempotency key must be byte-identical or the key is in conflict.
+  private idempotencyFingerprint(request: ExecuteRequest): string {
+    const canonical = JSON.stringify(sortJsonKeys(request));
+    return createHash("sha256").update(canonical, "utf8").digest("hex");
+  }
+
+  /// CompositorMCPCommandRouter.cache: store the result under the key and
+  /// evict oldest-first once the cache passes 20 entries.
+  private cacheIdempotentResult(result: JsonValue, fingerprint: string, key: string): void {
+    this.idempotencyCache.set(key, { fingerprint, result });
+    const orderIndex = this.idempotencyOrder.indexOf(key);
+    if (orderIndex !== -1) this.idempotencyOrder.splice(orderIndex, 1);
+    this.idempotencyOrder.push(key);
+    while (this.idempotencyOrder.length > 20) {
+      const oldest = this.idempotencyOrder.shift();
+      if (oldest !== undefined) this.idempotencyCache.delete(oldest);
+    }
   }
 
   /// The router's optimistic-concurrency guard (checkPrecondition): revision

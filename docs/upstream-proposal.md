@@ -15,7 +15,7 @@
 
 ## Summary
 
-I maintain [compositor-mcp](https://github.com/md-f-sarker/compositor-mcp), an
+I maintain [compositor-mcp-server](https://github.com/md-f-sarker/compositor-mcp), an
 open-source MCP server that gives AI assistants deep, native control of
 Compositor — every editing operation runs through `ProjectWorkspace`,
 `EditorSession` and the normal undo pipeline rather than UI automation, so
@@ -94,7 +94,7 @@ Any of these shapes would remove the patch requirement:
 - **Reviewable security surface:** the bridge's loopback/token/filesystem
   policy can be audited once upstream instead of living in a downstream patch.
 - **Growing ecosystem:** MCP is becoming the standard way assistants drive
-  desktop apps (DaVinci Resolve 21.1 ships a native MCP server). A supported
+  desktop apps (major creative tools already ship native MCP servers). A supported
   entry point positions Compositor for agentic workflows without committing to
   any particular server implementation.
 

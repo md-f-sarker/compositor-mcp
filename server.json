@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.md-f-sarker/compositor-mcp-server",
+  "description": "Deep Model Context Protocol integration for the Compositor macOS image editor — 62 native, undoable editing operations (layers, masks, selections, painting, retouching, filters, exports) behind a small search/execute surface with atomic batches, dry runs, preconditions and a filesystem allowlist.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/md-f-sarker/compositor-mcp",
+    "source": "github",
+    "subfolder": "packages/mcp-server"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "compositor-mcp-server",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" },
+      "runtimeHint": "npx",
+      "environmentVariables": [
+        {
+          "name": "COMPOSITOR_MCP_TIMEOUT_MS",
+          "description": "Bridge request timeout in milliseconds (raise for long-running operations on large documents)",
+          "isRequired": false
+        },
+        {
+          "name": "COMPOSITOR_MCP_MOCK",
+          "description": "Set to \"1\" to run against the deterministic mock bridge without the Compositor app",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

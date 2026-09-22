@@ -1,8 +1,8 @@
 # Published package (recommended): `npx` resolves and caches it per launch.
-# For a globally installed package, use command = "compositor-mcp" with no args.
+# For a globally installed package, use command = "compositor-mcp-server" with no args.
 [mcp_servers.compositor]
 command = "npx"
-args = ["-y", "compositor-mcp"]
+args = ["-y", "compositor-mcp-server"]
 
 # Development checkout: run the built entry point straight from the repo.
 # [mcp_servers.compositor-dev]

@@ -26,6 +26,9 @@ export interface WorkflowPrompt {
 /// Keep prose free of dotted tokens that look like operation names (e.g.
 /// "photo.png") — the registry-validation test scans rendered text for
 /// `category.name` tokens and fails on anything the catalogue does not implement.
+/// Every argsSchema carries .default({}): the MCP spec makes `arguments`
+/// optional on prompts/get, so clients legitimately omit it and a bare
+/// z.object() rejects undefined before the callback runs.
 export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
   {
     name: "export-for-web",
@@ -37,7 +40,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
         .optional()
         .describe("Directory the exports are written to; must sit inside an MCP-authorised root."),
       width: z.string().optional().describe('Target width in pixels, e.g. "1600". Height scales proportionally.'),
-    }),
+    }).default({}),
     build: (args) => {
       const width = args.width ?? "the target width";
       const directory = args.outputDirectory ?? "the authorised output directory";
@@ -73,7 +76,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
     description: "Remove the background around the subject, sit the cutout over a fresh backdrop layer, then refine the mask edge.",
     argsSchema: z.object({
       layerId: z.string().optional().describe('Layer carrying the subject, or "active" (the default).'),
-    }),
+    }).default({}),
     build: (args) => {
       const layer = args.layerId ?? "active";
       return {
@@ -109,7 +112,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
     description: "Select a blemish region and repair it with spot healing, cloning or content-aware fill — then deselect and review.",
     argsSchema: z.object({
       mode: z.string().optional().describe('Which repair step to emphasise: "heal", "clone" or "fill" (default "heal").'),
-    }),
+    }).default({}),
     build: (args) => {
       const mode = args.mode ?? "heal";
       const emphasis = {
@@ -160,7 +163,7 @@ export const WORKFLOW_PROMPTS: WorkflowPrompt[] = [
     argsSchema: z.object({
       variantName: z.string().optional().describe("Name for the duplicated layer, e.g. \"Warm grade\"."),
       outputDirectory: z.string().optional().describe("Directory the variant is exported to; must be MCP-authorised."),
-    }),
+    }).default({}),
     build: (args) => {
       const variant = args.variantName ?? "Variant 1";
       const directory = args.outputDirectory ?? "the authorised output directory";
