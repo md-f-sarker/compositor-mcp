@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/compositor-mcp-server)](https://www.npmjs.com/package/compositor-mcp-server)
 [![License: MIT](https://img.shields.io/npm/l/compositor-mcp-server)](LICENSE)
 
-**Deep Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
+**Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
 
 Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **62 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
 
@@ -18,7 +18,7 @@ You describe the edit in natural language; the assistant plans and executes it a
 
 Or: *"Heal out the watermark in the corner,"* *"resize this to 1600px wide and export PNG + JPEG,"* *"duplicate the layer, grade it warm, and save a variant"* — end-to-end tasks, not single clicks.
 
-The surface stays small even though the editor is deep: a `search` tool finds the right operation and returns only its schema, an `execute` tool runs operations singly or as an atomic all-or-nothing batch, MCP resources expose live editor state and rendered previews, and workflow prompts package complete recipes for common jobs.
+The surface stays small: a `search` tool finds the right operation and returns only its schema, an `execute` tool runs operations singly or as an atomic all-or-nothing batch, MCP resources expose live editor state and rendered previews, and workflow prompts package complete recipes for common jobs.
 
 ## Quickstart
 
