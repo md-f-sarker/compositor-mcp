@@ -4,7 +4,7 @@ set -euo pipefail
 # Upstream Compositor revision the bridge patch and Swift sources were audited
 # against (see README.md / NOTICE.md). Drift warns but does not fail: the patch
 # anchors are string-based and may still apply cleanly on newer commits.
-AUDITED_UPSTREAM_SHA="a19db9011282399785dc18efcfded904627bdcc2"
+AUDITED_UPSTREAM_SHA="75c421980ad2d289ea8244c54cfa3a649678d259"
 
 ROOT="${1:-}"
 if [[ -z "$ROOT" ]]; then

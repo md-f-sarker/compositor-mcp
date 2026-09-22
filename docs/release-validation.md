@@ -29,6 +29,15 @@ Performed with `scripts/validate-native.sh` against upstream `robbietilton/Compo
 - Compositor's own `CompositorTests`/`CompositorUITests` suites require Xcode and were not run.
 - Long-running operations (large content-aware fills, remove-background on big images) against real photo assets.
 
+## Live full-app validation — 22 September 2026, at upstream `75c4219`
+
+Performed against the real built application (`xcodebuild -project Compositor.xcodeproj -scheme Compositor`) rather than the headless harness.
+
+- Bridge installed into an upstream checkout at HEAD; the installer disables App Sandbox in `project.pbxproj` for the dev build (the stock entitlements lack `com.apple.security.network.server`, so the loopback listener and authorized-root file I/O cannot run inside it). The uninstaller restores the sandboxed settings.
+- Full app builds and launches via `open`; `bridge.json` is written by the normal launch path and `app.ping`'s `processId` matches it — the live endpoint is the real app process, not a stray binary.
+- Every newly bridged kind executes on a real document: `adjustment.add` for Invert, Motion Blur, and Black & White (tint), `filter.apply` for Color Balance, and a Camera Raw atmosphere pass (negative Dehaze, positive Glow) followed by a blurred gradient fog layer — exported to PNG.
+- Re-verified the merged fixes on the live app: `prompts/get` with no `arguments`, and `idempotency_conflict` on key reuse over a different request.
+
 ## Remaining before a tagged public release
 
 1. Build the patched app in Xcode 26 on macOS 26 and run upstream's test suites.

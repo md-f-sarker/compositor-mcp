@@ -248,7 +248,7 @@ test("install-bridge copies sources, patches the delegate and is idempotent", as
     const first = captureIo(env);
     assert.equal(await runCli(["install-bridge", root], first.io), 0);
     assert.match(first.stdout(), /Installed Compositor MCP bridge sources/);
-    assert.match(first.stdout(), /a19db9011282399785dc18efcfded904627bdcc2/);
+    assert.match(first.stdout(), /75c421980ad2d289ea8244c54cfa3a649678d259/);
     assert.match(first.stderr(), /not a git checkout/);
 
     assert.ok(await exists(path.join(root, "Compositor", "MCP", "CompositorMCPBridge.swift")));
@@ -272,12 +272,12 @@ test("install-bridge warns on upstream drift but proceeds and records both SHAs"
     execFileSync("git", ["init", "-q"], { cwd: root });
     execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-qm", "fixture", "--allow-empty"], { cwd: root });
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    assert.notEqual(head, "a19db9011282399785dc18efcfded904627bdcc2");
+    assert.notEqual(head, "75c421980ad2d289ea8244c54cfa3a649678d259");
 
     const { io, stdout, stderr } = captureIo({ COMPOSITOR_MCP_INSTALLER: repoInstaller });
     assert.equal(await runCli(["install-bridge", root], io), 0);
     assert.match(stderr(), /upstream drift detected/);
-    assert.match(stdout(), /a19db9011282399785dc18efcfded904627bdcc2/);
+    assert.match(stdout(), /75c421980ad2d289ea8244c54cfa3a649678d259/);
     assert.match(stdout(), new RegExp(head));
   } finally {
     await fs.rm(root, { recursive: true, force: true });

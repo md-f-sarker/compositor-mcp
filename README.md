@@ -110,7 +110,7 @@ See [docs/security.md](docs/security.md) for the threat model and known limitati
 - A local checkout of [Compositor](https://github.com/robbietilton/Compositor)
 - An MCP client that speaks stdio JSON-RPC — tested with Claude Code, Claude Desktop and Codex; any client on MCP protocol revisions supported by the TypeScript SDK works.
 
-The Swift integration was audited against upstream Compositor commit `a19db9011282399785dc18efcfded904627bdcc2`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report — it fails only if the app delegate has moved beyond its supported patch points.
+The Swift integration was audited against upstream Compositor commit `75c421980ad2d289ea8244c54cfa3a649678d259`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report — it fails only if the app delegate has moved beyond its supported patch points.
 
 ## Known limits
 
