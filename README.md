@@ -160,6 +160,6 @@ npx -y compositor-mcp-server uninstall-bridge /absolute/path/to/Compositor
 ./scripts/uninstall-from-compositor.sh /absolute/path/to/Compositor
 ```
 
-## Licensing and trademarks
+## Licensing
 
-This integration is MIT-licensed. Compositor is a separate MIT-licensed project by Robbie Tilton. DaVinci Resolve and Blackmagic Design are referenced only as architectural inspiration; this project is not affiliated with or endorsed by Blackmagic Design. See [NOTICE](NOTICE.md).
+This integration is MIT-licensed. Compositor is a separate MIT-licensed project by Robbie Tilton — full attribution in [NOTICE](NOTICE.md).
