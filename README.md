@@ -1,8 +1,8 @@
 # Compositor MCP
 
 [![CI](https://github.com/md-f-sarker/compositor-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/md-f-sarker/compositor-mcp/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/compositor-mcp)](https://www.npmjs.com/package/compositor-mcp)
-[![License: MIT](https://img.shields.io/npm/l/compositor-mcp)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/compositor-mcp-server)](https://www.npmjs.com/package/compositor-mcp-server)
+[![License: MIT](https://img.shields.io/npm/l/compositor-mcp-server)](LICENSE)
 
 **Deep Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
 
@@ -29,23 +29,23 @@ The surface stays small even though the editor is deep: a `search` tool finds th
   "mcpServers": {
     "compositor": {
       "command": "npx",
-      "args": ["-y", "compositor-mcp"]
+      "args": ["-y", "compositor-mcp-server"]
     }
   }
 }
 ```
 
-- **Claude Code:** `claude mcp add compositor -- npx -y compositor-mcp`
+- **Claude Code:** `claude mcp add compositor -- npx -y compositor-mcp-server`
 - **Claude Desktop / other clients:** merge the JSON stanza above into the client's MCP configuration.
-- Prefer a global install? `npm i -g compositor-mcp`, then use `"command": "compositor-mcp"` with no args.
+- Prefer a global install? `npm i -g compositor-mcp-server`, then use `"command": "compositor-mcp-server"` with no args.
 
 ### 2. Install the native bridge and authorize filesystem roots
 
 The bridge is a small set of Swift files installed into your Compositor checkout:
 
 ```bash
-npx -y compositor-mcp install-bridge /absolute/path/to/Compositor
-npx -y compositor-mcp configure "$HOME/Pictures" "$HOME/Downloads"
+npx -y compositor-mcp-server install-bridge /absolute/path/to/Compositor
+npx -y compositor-mcp-server configure "$HOME/Pictures" "$HOME/Downloads"
 ```
 
 Then open `Compositor.xcodeproj`, build and run the **Compositor** scheme once (Xcode file-system-synchronised groups pick up the new `Compositor/MCP` files automatically). Restart Compositor after changing configuration — file operations are denied outside the authorized roots.
@@ -53,7 +53,7 @@ Then open `Compositor.xcodeproj`, build and run the **Compositor** scheme once (
 ### 3. Verify the setup
 
 ```bash
-npx -y compositor-mcp doctor
+npx -y compositor-mcp-server doctor
 ```
 
 `doctor` checks the bridge discovery file, pings the running app, and reports the app version, protocol, implemented capability count, revision and authorized roots.
@@ -82,7 +82,7 @@ All 62 operations are implemented — see the full generated reference in [docs/
 
 ## The MCP surface
 
-Two tools, plus resources and prompts — the catalogue scales underneath, not the tool list:
+Two tools, plus resources and prompts — the catalogue scales underneath, not the tool list. Think of it as a typed, undoable editing API, not screenshots and synthetic clicks:
 
 - **`search`** — query the capability catalogue; returns names, risk classes and JSON schemas (`readOnlyHint`, `idempotentHint`).
 - **`execute`** — run one or more typed operations (`destructiveHint`). Both tools return `structuredContent` matching a declared output schema, alongside pretty-printed text for older clients.
@@ -108,8 +108,17 @@ See [docs/security.md](docs/security.md) for the threat model and known limitati
 - Xcode 26
 - Node.js 20.12 or newer
 - A local checkout of [Compositor](https://github.com/robbietilton/Compositor)
+- An MCP client that speaks stdio JSON-RPC — tested with Claude Code, Claude Desktop and Codex; any client on MCP protocol revisions supported by the TypeScript SDK works.
 
 The Swift integration was audited against upstream Compositor commit `a19db9011282399785dc18efcfded904627bdcc2`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report — it fails only if the app delegate has moved beyond its supported patch points.
+
+## Known limits
+
+- A single inbound JSON-RPC message over **10 MiB** kills the server process — a hard cap in the stock TypeScript SDK's stdio buffer, not a Compositor limit. Keep tool calls carrying large inline payloads under it.
+- An in-progress interactive edit in the app (transform, crop, gradient, filter, lasso or selection move) blocks mutating operations with `pending_edit` — commit or cancel it in the app first.
+- Atomic batches roll back editor history only. Filesystem writes (exports, preview renders) and other non-transactional operations cannot roll back — send them in `atomic: false` batches.
+- The mock bridge is a behavioural harness (~40 of 62 operations), not a renderer: state, validation and batch semantics are real; pixels are not. Idempotent replay is keyed on the entire request — reuse a key with different arguments and it is an `idempotency_conflict`, not a replay.
+- Canvas and layer bounds follow Compositor's own caps: 30,000 px per side, 100 megapixels per canvas, 10,000 layers.
 
 ## Repository layout
 
@@ -146,7 +155,7 @@ The TypeScript projects build and type-check, all tests pass, the Swift sources 
 ## Uninstall from Compositor
 
 ```bash
-npx -y compositor-mcp uninstall-bridge /absolute/path/to/Compositor
+npx -y compositor-mcp-server uninstall-bridge /absolute/path/to/Compositor
 # or, from a source checkout:
 ./scripts/uninstall-from-compositor.sh /absolute/path/to/Compositor
 ```

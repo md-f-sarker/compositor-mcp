@@ -15,7 +15,7 @@
 
 ## Summary
 
-I maintain [compositor-mcp](https://github.com/md-f-sarker/compositor-mcp), an
+I maintain [compositor-mcp-server](https://github.com/md-f-sarker/compositor-mcp), an
 open-source MCP server that gives AI assistants deep, native control of
 Compositor — every editing operation runs through `ProjectWorkspace`,
 `EditorSession` and the normal undo pipeline rather than UI automation, so

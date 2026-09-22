@@ -123,7 +123,7 @@ const SERVER_INSTRUCTIONS =
 export function createCompositorMcpServer(transport: BridgeTransport): McpServer {
   const server = new McpServer(
     {
-      name: "compositor-mcp",
+      name: "compositor-mcp-server",
       version: "0.1.0",
     },
     { instructions: SERVER_INSTRUCTIONS },

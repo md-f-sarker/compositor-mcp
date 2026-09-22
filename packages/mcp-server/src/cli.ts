@@ -16,16 +16,16 @@ export interface CliIo {
   env: NodeJS.ProcessEnv;
 }
 
-export const USAGE = `compositor-mcp — MCP server and bridge tooling for Compositor
+export const USAGE = `compositor-mcp-server — MCP server and bridge tooling for Compositor
 
 Usage:
-  compositor-mcp                          Run the MCP server over stdio (default)
-  compositor-mcp serve                    Same as above, explicitly
-  compositor-mcp doctor                   Verify the discovery file, bridge and configuration
-  compositor-mcp install-bridge <dir>     Install the native bridge into a Compositor checkout
-  compositor-mcp uninstall-bridge <dir>   Remove the bridge from a Compositor checkout
-  compositor-mcp configure <dir> [...]    Authorize filesystem roots for file operations
-  compositor-mcp --help                   Show this help
+  compositor-mcp-server                          Run the MCP server over stdio (default)
+  compositor-mcp-server serve                    Same as above, explicitly
+  compositor-mcp-server doctor                   Verify the discovery file, bridge and configuration
+  compositor-mcp-server install-bridge <dir>     Install the native bridge into a Compositor checkout
+  compositor-mcp-server uninstall-bridge <dir>   Remove the bridge from a Compositor checkout
+  compositor-mcp-server configure <dir> [...]    Authorize filesystem roots for file operations
+  compositor-mcp-server --help                   Show this help
 
 Environment:
   COMPOSITOR_MCP_BRIDGE_FILE   Override the bridge discovery file path
@@ -111,7 +111,7 @@ async function doctor(args: string[], io: CliIo): Promise<number> {
 
     const roots = await readConfiguredRoots(configDir(io.env));
     if (roots === null) {
-      lines.push("authorized roots: none configured (run `compositor-mcp configure <dir...>`)");
+      lines.push("authorized roots: none configured (run `compositor-mcp-server configure <dir...>`)");
     } else if (roots.length === 0) {
       lines.push("authorized roots: [] (filesystem operations denied)");
     } else {
@@ -124,18 +124,18 @@ async function doctor(args: string[], io: CliIo): Promise<number> {
     return 0;
   } catch (error) {
     const failure = normaliseError(error);
-    io.err("compositor-mcp doctor: FAILED");
+    io.err("compositor-mcp-server doctor: FAILED");
     io.err(`  code:    ${failure.code}`);
     io.err(`  message: ${failure.message}`);
     if (failure.code === "bridge_not_running" || failure.code === "bridge_connection_failed" || failure.code === "bridge_timeout" || failure.code === "bridge_closed") {
       io.err("");
       io.err("Next steps:");
       io.err("  1. Install the bridge into your Compositor checkout:");
-      io.err("       npx -y compositor-mcp install-bridge /path/to/Compositor");
+      io.err("       npx -y compositor-mcp-server install-bridge /path/to/Compositor");
       io.err("  2. Open Compositor.xcodeproj, build and run the Compositor scheme.");
       io.err("  3. Authorize filesystem roots for file operations:");
-      io.err("       npx -y compositor-mcp configure \"$HOME/Pictures\"");
-      io.err("  4. Re-run: npx -y compositor-mcp doctor");
+      io.err("       npx -y compositor-mcp-server configure \"$HOME/Pictures\"");
+      io.err("  4. Re-run: npx -y compositor-mcp-server doctor");
     }
     return 1;
   }
@@ -190,13 +190,13 @@ async function runBridgeScript(
   options: { command: string; script: string; overrideEnv: string },
 ): Promise<number> {
   if (args.length !== 1 || args[0] === undefined || args[0].startsWith("-")) {
-    io.err(`Usage: compositor-mcp ${options.command} /absolute/path/to/Compositor`);
+    io.err(`Usage: compositor-mcp-server ${options.command} /absolute/path/to/Compositor`);
     return EXIT_USAGE;
   }
 
   const script = await resolveScript(io.env, options.script, options.overrideEnv);
   if (script === null) {
-    io.err(`The bundled ${options.script} is missing from this package; reinstall compositor-mcp.`);
+    io.err(`The bundled ${options.script} is missing from this package; reinstall compositor-mcp-server.`);
     return EXIT_SOFTWARE;
   }
 
@@ -255,8 +255,8 @@ async function resolveScript(env: NodeJS.ProcessEnv, scriptName: string, overrid
 
 async function configure(args: string[], io: CliIo): Promise<number> {
   if (args.length === 0) {
-    io.err("Usage: compositor-mcp configure /allowed/root [/another/root ...]");
-    io.err("Example: compositor-mcp configure \"$HOME/Pictures\" \"$HOME/Downloads\"");
+    io.err("Usage: compositor-mcp-server configure /allowed/root [/another/root ...]");
+    io.err("Example: compositor-mcp-server configure \"$HOME/Pictures\" \"$HOME/Downloads\"");
     return EXIT_USAGE;
   }
 

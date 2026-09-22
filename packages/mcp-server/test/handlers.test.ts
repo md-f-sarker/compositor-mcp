@@ -925,3 +925,66 @@ test("layer.select target mask fails on a maskless layer, then paints the mask",
   assert.equal(outcome.mask, true);
   assert.equal(outcome.applied, true);
 });
+
+test("idempotency key replays the stored result instead of re-running", async () => {
+  const bridge = new MockBridgeTransport();
+  const request: ExecuteRequest = {
+    operations: [{ name: "document.create", arguments: { width: 100, height: 100 } }],
+    idempotencyKey: "idem-key-0001",
+  };
+  const first = await execute(bridge, request);
+  assert.equal(first.ok, true);
+
+  // The replay must return the stored envelope verbatim — including the
+  // revision it captured — rather than executing a second document.create.
+  const replayed = await execute(bridge, request);
+  assert.deepEqual(replayed.results, first.results);
+  assert.equal((replayed as Record<string, unknown>)["revision"], (first as Record<string, unknown>)["revision"]);
+});
+
+test("replayed results survive revision drift", async () => {
+  const bridge = new MockBridgeTransport();
+  await execute(bridge, {
+    operations: [{ name: "app.ping" }],
+    idempotencyKey: "idem-key-0002",
+  });
+  await createDocument(bridge); // moves the revision forward
+  const replayed = await execute(bridge, {
+    operations: [{ name: "app.ping" }],
+    idempotencyKey: "idem-key-0002",
+  });
+  assert.equal(replayed.ok, true);
+  // Revision in the stored envelope reflects when it ran, not the live one.
+  assert.equal((replayed as Record<string, unknown>)["revision"], 0);
+});
+
+test("reusing a key for a different request is an idempotency conflict", async () => {
+  const bridge = new MockBridgeTransport();
+  await execute(bridge, {
+    operations: [{ name: "app.ping" }],
+    idempotencyKey: "idem-key-0003",
+  });
+  await assert.rejects(
+    () =>
+      handleExecute(bridge, {
+        operations: [{ name: "app.getState" }],
+        idempotencyKey: "idem-key-0003",
+      }),
+    /idempotency_conflict|different request/i,
+  );
+});
+
+test("dry-run results are never stored under the idempotency key", async () => {
+  const bridge = new MockBridgeTransport();
+  await execute(bridge, {
+    operations: [{ name: "app.ping" }],
+    dryRun: true,
+    idempotencyKey: "idem-key-0004",
+  });
+  const live = await execute(bridge, {
+    operations: [{ name: "app.ping" }],
+    idempotencyKey: "idem-key-0004",
+  });
+  assert.equal(live.ok, true);
+  assert.equal((live as Record<string, unknown>)["dryRun"], false);
+});
