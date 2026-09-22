@@ -217,6 +217,31 @@ const grainFilterParameters = object({
   roughness: number("Per-pixel noise roughness, 0–100.", { minimum: 0, maximum: 100 }),
 });
 
+const blackWhiteParameters = object({
+  reds: number("Red channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 40 }),
+  yellows: number("Yellow channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 60 }),
+  greens: number("Green channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 40 }),
+  cyans: number("Cyan channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 60 }),
+  blues: number("Blue channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 20 }),
+  magentas: number("Magenta channel weight, −200 to 300.", { minimum: -200, maximum: 300, default: 80 }),
+  tint: boolean("Colour the grayscale result (sepia, cyanotype).", false),
+  tintHue: number("Tint hue in degrees, 0–360.", { minimum: 0, maximum: 360, default: 40 }),
+  tintSaturation: number("Tint saturation, 0–100.", { minimum: 0, maximum: 100, default: 20 }),
+});
+
+const colorBalanceParameters = object({
+  shadowCyanRed: number("Shadows: cyan ↔ red, −100 to 100.", { minimum: -100, maximum: 100 }),
+  shadowMagentaGreen: number("Shadows: magenta ↔ green, −100 to 100.", { minimum: -100, maximum: 100 }),
+  shadowYellowBlue: number("Shadows: yellow ↔ blue, −100 to 100.", { minimum: -100, maximum: 100 }),
+  midCyanRed: number("Midtones: cyan ↔ red, −100 to 100.", { minimum: -100, maximum: 100 }),
+  midMagentaGreen: number("Midtones: magenta ↔ green, −100 to 100.", { minimum: -100, maximum: 100 }),
+  midYellowBlue: number("Midtones: yellow ↔ blue, −100 to 100.", { minimum: -100, maximum: 100 }),
+  highlightCyanRed: number("Highlights: cyan ↔ red, −100 to 100.", { minimum: -100, maximum: 100 }),
+  highlightMagentaGreen: number("Highlights: magenta ↔ green, −100 to 100.", { minimum: -100, maximum: 100 }),
+  highlightYellowBlue: number("Highlights: yellow ↔ blue, −100 to 100.", { minimum: -100, maximum: 100 }),
+  preserveLuminosity: boolean("Restore each pixel's brightness after the shift.", true),
+});
+
 const kindConst = (kind: string, description: string): JsonSchema => ({
   type: "string",
   description,
@@ -230,6 +255,31 @@ const ADJUSTMENT_PARAMETERS: ReadonlyArray<readonly [string, JsonSchema]> = [
   ["Exposure", exposureParameters],
   ["Gradient Map", gradientMapParameters],
   ["Grain", grainParameters],
+  ["Black & White", blackWhiteParameters],
+  ["Color Balance", colorBalanceParameters],
+  [
+    "Gaussian Blur",
+    object({
+      radius: number("Blur radius in document pixels, 0.1–250.", { minimum: 0.1, maximum: 250 }),
+    }),
+  ],
+  [
+    "Motion Blur",
+    object({
+      angle: number("Streak direction in degrees, −90 to 90.", { minimum: -90, maximum: 90, default: 0 }),
+      distance: number("Streak length in document pixels, 1–2000.", { minimum: 1, maximum: 2000 }),
+    }),
+  ],
+  [
+    "Add Noise",
+    object({
+      amount: number("Noise strength as a percentage, 0.1–400.", { minimum: 0.1, maximum: 400 }),
+      gaussian: boolean("Gaussian distribution instead of uniform.", false),
+      monochromatic: boolean("Brightness-only noise.", false),
+      seed: integer("Noise pattern seed — honoured on adjustment layers.", { minimum: 0, maximum: 4294967295 }),
+    }),
+  ],
+  ["Invert", object()],
 ];
 
 const FILTER_SETTINGS: ReadonlyArray<readonly [string, JsonSchema]> = [
@@ -283,7 +333,55 @@ const FILTER_SETTINGS: ReadonlyArray<readonly [string, JsonSchema]> = [
   ["Curves", curvesParameters],
   ["Exposure", exposureParameters],
   ["Gradient Map", gradientMapParameters],
+  ["Black & White", blackWhiteParameters],
+  ["Color Balance", colorBalanceParameters],
   ["Grain", grainFilterParameters],
+  [
+    "Camera Raw Filter",
+    {
+      ...object({
+        whiteBalance: string("White balance preset.", { enum: ["Custom", "Auto"], default: "Custom" }),
+        temperature: number("Cool ↔ warm, −100 to 100.", { minimum: -100, maximum: 100 }),
+        tint: number("Green ↔ magenta, −100 to 100.", { minimum: -100, maximum: 100 }),
+        exposure: number("Stops of linear light, −5 to 5.", { minimum: -5, maximum: 5 }),
+        contrast: number("Contrast, −100 to 100.", { minimum: -100, maximum: 100 }),
+        highlights: number("Highlights, −100 to 100.", { minimum: -100, maximum: 100 }),
+        shadows: number("Shadows, −100 to 100.", { minimum: -100, maximum: 100 }),
+        whites: number("Whites, −100 to 100.", { minimum: -100, maximum: 100 }),
+        blacks: number("Blacks, −100 to 100.", { minimum: -100, maximum: 100 }),
+        vibrance: number("Vibrance, −100 to 100.", { minimum: -100, maximum: 100 }),
+        saturation: number("Saturation, −100 to 100.", { minimum: -100, maximum: 100 }),
+        texture: number("Fine local contrast, −100 to 100.", { minimum: -100, maximum: 100 }),
+        clarity: number("Broad local contrast, −100 to 100.", { minimum: -100, maximum: 100 }),
+        dehaze: number("Contrast and colour depth vs lifted shadows, −100 to 100.", { minimum: -100, maximum: 100 }),
+        glow: number("Glow strength, 0–100; the other glow fields are idle while this is zero.", {
+          minimum: 0,
+          maximum: 100,
+        }),
+        glowStyle: string("Glow kernel.", { enum: ["Diffusion", "Bloom", "Halation"], default: "Diffusion" }),
+        glowRange: number("Tonal range the glow covers, −100 to 100.", { minimum: -100, maximum: 100 }),
+        glowSpread: number("Glow spread, −100 to 100.", { minimum: -100, maximum: 100 }),
+        glowWarmth: number("Glow colour warmth, −100 to 100.", { minimum: -100, maximum: 100 }),
+        vignetteAmount: number("Edge darkening (negative) or lightening (positive), −100 to 100.", {
+          minimum: -100,
+          maximum: 100,
+        }),
+        vignetteStyle: string("Vignette blend style.", {
+          enum: ["Highlight Priority", "Color Priority", "Paint Overlay"],
+          default: "Highlight Priority",
+        }),
+        vignetteMidpoint: number("Vignette midpoint, 0–100.", { minimum: 0, maximum: 100, default: 50 }),
+        vignetteRoundness: number("Vignette roundness, −100 to 100.", { minimum: -100, maximum: 100 }),
+        vignetteFeather: number("Vignette feather, 0–100.", { minimum: 0, maximum: 100, default: 50 }),
+        vignetteHighlights: number("Highlight recovery while darkening, 0–100.", { minimum: 0, maximum: 100 }),
+        grainAmount: number("Film grain amount, 0–100.", { minimum: 0, maximum: 100 }),
+        grainSize: number("Grain size, 0–100.", { minimum: 0, maximum: 100, default: 25 }),
+        grainRoughness: number("Grain roughness, 0–100.", { minimum: 0, maximum: 100, default: 50 }),
+      }),
+      description:
+        "Camera Raw's flat light/colour/effects sliders. The panel's nested groups — curve, mixer, grading, detail, optics, geometry, calibration — are not bridged yet.",
+    },
+  ],
 ];
 
 export const CAPABILITIES: readonly Capability[] = [
@@ -1109,7 +1207,7 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "adjustment.add",
     title: "Add adjustment layer",
-    description: "Add Levels, Curves, Hue/Saturation, Exposure, Gradient Map or Grain adjustment layer.",
+    description: "Add an adjustment layer: Levels, Curves, Hue/Saturation, Exposure, Gradient Map, Grain, Black & White, Color Balance, Gaussian Blur, Motion Blur, Add Noise or Invert.",
     category: "adjustment",
     aliases: ["new adjustment", "adjustment layer"],
     tags: ["non-destructive", "colour", "levels", "curves"],
@@ -1159,7 +1257,7 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "filter.apply",
     title: "Apply image filter",
-    description: "Apply Gaussian Blur, Motion Blur, Add Noise, Lens Correction, Remove Background or supported colour adjustment.",
+    description: "Apply Gaussian Blur, Motion Blur, Add Noise, Lens Correction, Remove Background, Camera Raw Filter or supported colour adjustment.",
     category: "filter",
     aliases: ["apply filter", "gaussian blur", "remove background"],
     tags: ["filter", "blur", "noise", "background"],

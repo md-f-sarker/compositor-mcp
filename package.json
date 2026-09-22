@@ -2,7 +2,7 @@
   "name": "compositor-mcp-workspace",
   "private": true,
   "version": "0.1.0",
-  "description": "Deep Model Context Protocol integration for the Compositor macOS image editor",
+  "description": "Model Context Protocol integration for the Compositor macOS image editor",
   "workspaces": [
     "packages/*"
   ],

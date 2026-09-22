@@ -4,7 +4,7 @@ set -euo pipefail
 # Upstream Compositor revision the bridge patch and Swift sources were audited
 # against (see README.md / NOTICE.md). Drift warns but does not fail: the patch
 # anchors are string-based and may still apply cleanly on newer commits.
-AUDITED_UPSTREAM_SHA="a19db9011282399785dc18efcfded904627bdcc2"
+AUDITED_UPSTREAM_SHA="75c421980ad2d289ea8244c54cfa3a649678d259"
 
 ROOT="${1:-}"
 if [[ -z "$ROOT" ]]; then
@@ -84,8 +84,36 @@ else:
     print(f"Already patched: {path}")
 PY
 
+PROJECT="$ROOT/Compositor.xcodeproj/project.pbxproj"
+[[ -f "$PROJECT" ]] || { echo "Missing $PROJECT" >&2; exit 66; }
+
+python3 - "$PROJECT" <<'PY'
+from pathlib import Path
+import sys
+
+# The bridge hosts a loopback listener and performs file I/O under the
+# configured authorized roots — both are impossible inside App Sandbox
+# (the stock entitlements grant only user-selected file access), so the
+# dev build must run unsandboxed. Mirrors the xcodebuild overrides
+# ENABLE_APP_SANDBOX=NO and CODE_SIGN_ENTITLEMENTS= empty.
+path = Path(sys.argv[1])
+text = path.read_text()
+original = text
+text = text.replace("ENABLE_APP_SANDBOX = YES;", "ENABLE_APP_SANDBOX = NO;")
+text = text.replace(
+    "CODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;",
+    'CODE_SIGN_ENTITLEMENTS = "";',
+)
+if text != original:
+    path.write_text(text)
+    print(f"Disabled App Sandbox for the MCP bridge in {path}")
+else:
+    print(f"App Sandbox already disabled (or settings moved): {path}")
+PY
+
 echo "Installed Compositor MCP bridge sources into $DEST_DIR"
 echo "Install report:"
 echo "  audited upstream commit: $AUDITED_UPSTREAM_SHA"
 echo "  upstream HEAD:           ${UPSTREAM_HEAD:-unknown (not a git checkout)}"
+echo "  app sandbox:             disabled for this dev build (loopback listener + file I/O need it)"
 echo "Open Compositor.xcodeproj and build the Compositor scheme."

@@ -5,7 +5,7 @@
 // end-to-end: the packed package's own assets must be able to patch a
 // representative Compositor checkout.
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,10 @@ try {
   mkdirSync(path.join(compositor, "Compositor.xcodeproj"), { recursive: true });
   mkdirSync(path.join(compositor, "Compositor", "IO"), { recursive: true });
   copyFileSync(fixture, path.join(compositor, "Compositor", "IO", "CompositorApplicationDelegate.swift"));
+  writeFileSync(
+    path.join(compositor, "Compositor.xcodeproj", "project.pbxproj"),
+    "\t\tCODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;\n\t\tENABLE_APP_SANDBOX = YES;\n",
+  );
 
   const env = { ...process.env };
   delete env.COMPOSITOR_MCP_INSTALLER;

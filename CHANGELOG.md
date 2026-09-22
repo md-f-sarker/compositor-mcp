@@ -17,6 +17,9 @@
 - Fixed `prompts/get` failing with -32602 when `arguments` is omitted — the MCP spec makes the field optional, so every workflow prompt's args schema now defaults to `{}`.
 - Taught the mock bridge the router's idempotency semantics: a SHA-256 fingerprint of the canonicalized request replays the stored result verbatim, a reused key over a different request fails with `idempotency_conflict`, dry runs are never cached, and the cache evicts oldest-first past 20 keys.
 - Documented the SDK's 10 MiB stdio message cap and the pending-edit, non-transactional and canvas/layer bounds in a new README "Known limits" section, plus a requirements line covering tested clients and protocol revisions.
+- Brought the bridge up to upstream HEAD (`75c4219`): exhaustive switches in `CompositorMCPFilters.swift` now cover the new `AdjustmentKind` cases (Black & White, Color Balance, Gaussian Blur, Motion Blur, Add Noise, Invert) and `FilterKind` cases (Black & White, Color Balance, Camera Raw Filter), with typed builders for each parameter set — the bridge previously failed to compile against HEAD, so the installer proceeded into a broken build.
+- Bridged the Camera Raw filter's flat sliders (white balance, exposure, tone, presence, dehaze, glow, vignette, grain, style enums) — enough for atmospheric passes like haze and glow; the nested panel groups (curve, mixer, grading, detail, optics, geometry, calibration) are not yet bridged.
+- Fixed the stock-app dead end: the installer now disables App Sandbox in the dev build's `project.pbxproj` — upstream's entitlements lack `com.apple.security.network.server`, so the bridge's loopback listener could not start and no `bridge.json` was ever written. The uninstaller restores the sandboxed settings. The audited upstream commit advanced to `75c4219`.
 
 ## 0.1.0 - 2026-09-19
 
