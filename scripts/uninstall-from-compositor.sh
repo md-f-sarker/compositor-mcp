@@ -36,5 +36,26 @@ path.write_text(text)
 print(f"Removed app-delegate integration from {path}")
 PY
 
+PROJECT="$ROOT/Compositor.xcodeproj/project.pbxproj"
+if [[ -f "$PROJECT" ]]; then
+  python3 - "$PROJECT" <<'PY'
+from pathlib import Path
+import sys
+
+# Restore the upstream build settings the installer changed.
+path = Path(sys.argv[1])
+text = path.read_text()
+original = text
+text = text.replace("ENABLE_APP_SANDBOX = NO;", "ENABLE_APP_SANDBOX = YES;")
+text = text.replace(
+    'CODE_SIGN_ENTITLEMENTS = "";',
+    "CODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;",
+)
+if text != original:
+    path.write_text(text)
+    print(f"Restored App Sandbox settings in {path}")
+PY
+fi
+
 rm -rf "$ROOT/Compositor/MCP"
 echo "Removed Compositor MCP bridge sources."

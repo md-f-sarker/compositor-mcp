@@ -311,6 +311,27 @@ extension CompositorMCPCommandRouter {
             adjustment.gradientMap = try buildGradientMap(base: adjustment.gradientMap, parameters: parameters)
         case .grain:
             adjustment.grain = try buildGrain(base: adjustment.grain, parameters: parameters)
+        case .blackWhite:
+            adjustment.blackWhiteSettings = try buildBlackWhite(base: adjustment.blackWhite, parameters: parameters)
+        case .colorBalance:
+            adjustment.colorBalanceSettings = try buildColorBalance(base: adjustment.colorBalance, parameters: parameters)
+        case .gaussianBlur:
+            if let value = try parameters.optionalDouble("radius") { adjustment.blurRadius = value }
+        case .motionBlur:
+            if let value = try parameters.optionalDouble("angle") { adjustment.motionAngle = value }
+            if let value = try parameters.optionalDouble("distance") { adjustment.motionDistance = value }
+        case .addNoise:
+            if let value = try parameters.optionalDouble("amount") { adjustment.noiseAmount = value }
+            if let value = try parameters.optionalBool("gaussian") { adjustment.noiseGaussian = value }
+            if let value = try parameters.optionalBool("monochromatic") { adjustment.noiseMonochromatic = value }
+            if let seed = try parameters.optionalInt("seed") {
+                guard (0...Int(UInt32.max)).contains(seed) else {
+                    throw CompositorMCPCommandError.invalid("seed must be between 0 and 4,294,967,295.")
+                }
+                adjustment.noiseSeed = UInt32(seed)
+            }
+        case .invert:
+            break
         }
         guard adjustment.isValid else {
             throw CompositorMCPCommandError.invalid("parameters are outside \(kind.rawValue)'s limits.")
@@ -524,11 +545,100 @@ extension CompositorMCPCommandRouter {
             settings.exposure = try buildExposure(base: settings.exposure, parameters: fields)
         case .gradientMap:
             settings.gradientMap = try buildGradientMap(base: settings.gradientMap, parameters: fields)
+        case .blackWhite:
+            settings.blackWhite = try buildBlackWhite(base: settings.blackWhite, parameters: fields)
+        case .colorBalance:
+            settings.colorBalance = try buildColorBalance(base: settings.colorBalance, parameters: fields)
+        case .cameraRaw:
+            settings.cameraRaw = try buildCameraRaw(base: settings.cameraRaw, fields: fields)
         case .grain:
             // Grain is a real settings field, but the committed FilterJob's seed (the
             // edit's own, random per panel) wins over it at run time — same as the UI.
             settings.grain = try buildGrain(base: settings.grain, parameters: fields)
         }
         return settings.normalized
+    }
+
+    /// Black & White's six channel weights (−200…300, Photoshop's defaults) plus optional
+    /// tinting that re-colours the grayscale result — sepia, cyanotype and the like.
+    func buildBlackWhite(base: BlackWhiteSettings, parameters: [String: CompositorMCPJSON]) throws -> BlackWhiteSettings {
+        var settings = base
+        if let value = try parameters.optionalDouble("reds") { settings.reds = value }
+        if let value = try parameters.optionalDouble("yellows") { settings.yellows = value }
+        if let value = try parameters.optionalDouble("greens") { settings.greens = value }
+        if let value = try parameters.optionalDouble("cyans") { settings.cyans = value }
+        if let value = try parameters.optionalDouble("blues") { settings.blues = value }
+        if let value = try parameters.optionalDouble("magentas") { settings.magentas = value }
+        if let value = try parameters.optionalBool("tint") { settings.tint = value }
+        if let value = try parameters.optionalDouble("tintHue") { settings.tintHue = value }
+        if let value = try parameters.optionalDouble("tintSaturation") { settings.tintSaturation = value }
+        guard settings.isValid else {
+            throw CompositorMCPCommandError.invalid("parameters are outside Black & White's limits.")
+        }
+        return settings
+    }
+
+    /// Color Balance's nine sliders — three opposing pairs across shadows, midtones and
+    /// highlights — plus Preserve Luminosity, which restores brightness after the shift.
+    func buildColorBalance(base: ColorBalanceSettings, parameters: [String: CompositorMCPJSON]) throws -> ColorBalanceSettings {
+        var settings = base
+        if let value = try parameters.optionalDouble("shadowCyanRed") { settings.shadowCyanRed = value }
+        if let value = try parameters.optionalDouble("shadowMagentaGreen") { settings.shadowMagentaGreen = value }
+        if let value = try parameters.optionalDouble("shadowYellowBlue") { settings.shadowYellowBlue = value }
+        if let value = try parameters.optionalDouble("midCyanRed") { settings.midCyanRed = value }
+        if let value = try parameters.optionalDouble("midMagentaGreen") { settings.midMagentaGreen = value }
+        if let value = try parameters.optionalDouble("midYellowBlue") { settings.midYellowBlue = value }
+        if let value = try parameters.optionalDouble("highlightCyanRed") { settings.highlightCyanRed = value }
+        if let value = try parameters.optionalDouble("highlightMagentaGreen") { settings.highlightMagentaGreen = value }
+        if let value = try parameters.optionalDouble("highlightYellowBlue") { settings.highlightYellowBlue = value }
+        if let value = try parameters.optionalBool("preserveLuminosity") { settings.preserveLuminosity = value }
+        guard settings.isValid else {
+            throw CompositorMCPCommandError.invalid("parameters are outside Color Balance's limits.")
+        }
+        return settings
+    }
+
+    /// Camera Raw's flat light/color/effects sliders and style enums. The panel's nested
+    /// groups — curve, mixer, grading, detail, optics, geometry, calibration — are not
+    /// bridged yet; their fields keep whatever the edit already holds.
+    func buildCameraRaw(base: CameraRawSettings, fields: [String: CompositorMCPJSON]) throws -> CameraRawSettings {
+        var settings = base
+        if let value = try fields.optionalString("whiteBalance") {
+            guard let whiteBalance = CameraRawWhiteBalance.matching(value) else {
+                throw CompositorMCPCommandError.invalid("whiteBalance must be Custom or Auto.")
+            }
+            settings.whiteBalance = whiteBalance
+        }
+        let tones: [String: WritableKeyPath<CameraRawSettings, Double>] = [
+            "temperature": \.temperature, "tint": \.tint, "exposure": \.exposure,
+            "contrast": \.contrast, "highlights": \.highlights, "shadows": \.shadows,
+            "whites": \.whites, "blacks": \.blacks, "vibrance": \.vibrance,
+            "saturation": \.saturation, "texture": \.texture, "clarity": \.clarity,
+            "dehaze": \.dehaze, "glow": \.glow, "glowRange": \.glowRange,
+            "glowSpread": \.glowSpread, "glowWarmth": \.glowWarmth,
+            "vignetteAmount": \.vignetteAmount, "vignetteMidpoint": \.vignetteMidpoint,
+            "vignetteRoundness": \.vignetteRoundness, "vignetteFeather": \.vignetteFeather,
+            "vignetteHighlights": \.vignetteHighlights, "grainAmount": \.grainAmount,
+            "grainSize": \.grainSize, "grainRoughness": \.grainRoughness,
+        ]
+        for (key, path) in tones {
+            if let value = try fields.optionalDouble(key) { settings[keyPath: path] = value }
+        }
+        if let value = try fields.optionalString("glowStyle") {
+            guard let style = CameraRawGlowStyle.matching(value) else {
+                throw CompositorMCPCommandError.invalid("glowStyle must be Diffusion, Bloom or Halation.")
+            }
+            settings.glowStyle = style
+        }
+        if let value = try fields.optionalString("vignetteStyle") {
+            guard let style = CameraRawVignetteStyle.matching(value) else {
+                throw CompositorMCPCommandError.invalid("vignetteStyle must be Highlight Priority, Color Priority or Paint Overlay.")
+            }
+            settings.vignetteStyle = style
+        }
+        guard settings.isValid else {
+            throw CompositorMCPCommandError.invalid("parameters are outside Camera Raw Filter's limits.")
+        }
+        return settings
     }
 }

@@ -55,6 +55,10 @@ try {
   mkdirSync(path.join(compositor, "Compositor.xcodeproj"), { recursive: true });
   mkdirSync(path.join(compositor, "Compositor", "IO"), { recursive: true });
   copyFileSync(fixture, path.join(compositor, "Compositor", "IO", "CompositorApplicationDelegate.swift"));
+  writeFileSync(
+    path.join(compositor, "Compositor.xcodeproj", "project.pbxproj"),
+    "\t\tCODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;\n\t\tENABLE_APP_SANDBOX = YES;\n",
+  );
 
   const env = { ...process.env };
   delete env.COMPOSITOR_MCP_INSTALLER;

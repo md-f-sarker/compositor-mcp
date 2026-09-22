@@ -28,11 +28,14 @@ jobs:
         run: |
           mkdir -p /tmp/Compositor/Compositor.xcodeproj /tmp/Compositor/Compositor/IO
           cp packages/mcp-server/test/fixtures/AppDelegate.fixture.swift /tmp/Compositor/Compositor/IO/CompositorApplicationDelegate.swift
+          printf '\t\tCODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;\n\t\tENABLE_APP_SANDBOX = YES;\n' > /tmp/Compositor/Compositor.xcodeproj/project.pbxproj
       - run: ./scripts/install-into-compositor.sh /tmp/Compositor
       - run: ./scripts/install-into-compositor.sh /tmp/Compositor
       - run: test -f /tmp/Compositor/Compositor/MCP/CompositorMCPBridge.swift
       - run: grep -q 'bridge.start()' /tmp/Compositor/Compositor/IO/CompositorApplicationDelegate.swift
+      - run: grep -q 'ENABLE_APP_SANDBOX = NO;' /tmp/Compositor/Compositor.xcodeproj/project.pbxproj
       - run: ./scripts/uninstall-from-compositor.sh /tmp/Compositor
+      - run: grep -q 'ENABLE_APP_SANDBOX = YES;' /tmp/Compositor/Compositor.xcodeproj/project.pbxproj
 
   pack-smoke-test:
     runs-on: ubuntu-latest

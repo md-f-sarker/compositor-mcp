@@ -31,6 +31,14 @@ async function makeCompositorTree(): Promise<string> {
   await fs.mkdir(path.join(root, "Compositor.xcodeproj"), { recursive: true });
   await fs.mkdir(path.join(root, "Compositor", "IO"), { recursive: true });
   await fs.copyFile(DELEGATE_FIXTURE, path.join(root, "Compositor", "IO", "CompositorApplicationDelegate.swift"));
+  await fs.writeFile(
+    path.join(root, "Compositor.xcodeproj", "project.pbxproj"),
+    [
+      "		CODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;",
+      "		ENABLE_APP_SANDBOX = YES;",
+      "",
+    ].join("\n"),
+  );
   return root;
 }
 
@@ -246,6 +254,9 @@ test("install-bridge copies sources, patches the delegate and is idempotent", as
     assert.ok(await exists(path.join(root, "Compositor", "MCP", "CompositorMCPBridge.swift")));
     const patched = await fs.readFile(path.join(root, "Compositor", "IO", "CompositorApplicationDelegate.swift"), "utf8");
     assert.match(patched, /bridge\.start\(\)/);
+    const project = await fs.readFile(path.join(root, "Compositor.xcodeproj", "project.pbxproj"), "utf8");
+    assert.match(project, /ENABLE_APP_SANDBOX = NO;/);
+    assert.match(project, /CODE_SIGN_ENTITLEMENTS = "";/);
 
     const second = captureIo(env);
     assert.equal(await runCli(["install-bridge", root], second.io), 0);
