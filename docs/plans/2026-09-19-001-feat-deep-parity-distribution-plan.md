@@ -10,13 +10,13 @@ target_repo: compositor-mcp
 
 ## Summary
 
-Take `compositor-mcp` from private alpha (42 of 62 catalogue capabilities implemented, source-build-only, contributor-oriented docs) to a DaVinci-Resolve-class MCP surface: every planned capability implemented natively inside Compositor, a richer MCP surface (structured outputs, resources, prompts, image previews), an `npx`-installable package with CLI helpers, and user-facing documentation suitable for an open-source launch.
+Take `compositor-mcp` from private alpha (42 of 62 catalogue capabilities implemented, source-build-only, contributor-oriented docs) to a best-in-class MCP surface: every planned capability implemented natively inside Compositor, a richer MCP surface (structured outputs, resources, prompts, image previews), an `npx`-installable package with CLI helpers, and user-facing documentation suitable for an open-source launch.
 
 ---
 
 ## Problem Frame
 
-The current release has a solid architectural core — a Cloudflare Code-Mode-shaped `search` + `execute` surface over an authenticated loopback bridge — but stops short of "do everything the app can do":
+The current release has a solid architectural core — a code-mode `search` + `execute` surface over an authenticated loopback bridge — but stops short of "do everything the app can do":
 
 - 20 of 62 catalogue capabilities are `planned` stubs; `execute` rejects them. The missing group is the entire deep-editor surface: crop/resize, free distort, marquee/lasso/wand, content-aware fill, brush/heal/clone/liquify strokes, gradients, shapes, adjustment layers and filters.
 - 8 of those 20 planned capabilities (`paint.spotHeal`, `paint.clone`, `paint.blur`, `paint.gradient`, `paint.shape`, `adjustment.add`, `adjustment.update`, `filter.apply`) have **empty input schemas** — the contract itself is unfinished.
@@ -25,7 +25,7 @@ The current release has a solid architectural core — a Cloudflare Code-Mode-sh
 - The native install patches `CompositorApplicationDelegate` via string anchors. Upstream has already drifted (new `application(_:open:)`, `applicationWillFinishLaunching`, `applicationShouldTerminate` methods) — it still applies today, but there is no drift detection or upstream engagement path.
 - The README is accurate but written for contributors. There is no user quickstart, no generated capability reference, and standard OSS hygiene files (code of conduct, issue/PR templates) are absent.
 
-Reference points confirmed by research: DaVinci Resolve 21.1 (Sept 2026) ships a native MCP server letting assistants do real project tasks; third-party Resolve MCPs expose 295–334 tools for full API coverage. Cloudflare's API MCP uses the same two-tool `search`/`execute` shape this repo already has — the architecture is right; the depth, surface richness, and distribution are what is missing.
+Reference points confirmed by research: leading creative desktop apps ship native MCP servers letting assistants do real project tasks, with third-party MCP surfaces exposing 295–334 tools for full API coverage; API MCP gateways use the same two-tool `search`/`execute` shape this repo already has — the architecture is right; the depth, surface richness, and distribution are what is missing.
 
 ---
 
@@ -35,7 +35,7 @@ Reference points confirmed by research: DaVinci Resolve 21.1 (Sept 2026) ships a
 |----|-------------|
 | R1 | Every catalogue capability marked `planned` is implemented through Compositor's native document model, renderer, and undo system — no pixel-coordinate or UI-gesture automation. |
 | R2 | The MCP surface stays small-context (search + execute) but gains `structuredContent`, output schemas, tool annotations, MCP resources for readable state, and MCP prompts for end-to-end editing workflows. |
-| R3 | Agents can complete real editing tasks end-to-end (e.g., "remove the background, place the subject on a new layer, export a web-ready PNG") using workflow prompts and composable operations — the DaVinci-style "do everything" bar. |
+| R3 | Agents can complete real editing tasks end-to-end (e.g., "remove the background, place the subject on a new layer, export a web-ready PNG") using workflow prompts and composable operations — the "do everything" bar. |
 | R4 | A user can install and run the server via `npx` with one JSON stanza, verify their setup with a `doctor` command, and install/configure the native bridge via CLI — no source build required for the TypeScript side. |
 | R5 | The README and docs read as an open-source product page: what it does, quickstart per major client, capability reference, security summary, contribution path — with contributor detail moved under `docs/`. |
 | R6 | The existing safety model (loopback-only, bearer token, filesystem allowlist, destructive confirmation, atomic undo grouping, audit log) is preserved and extended to the new operations; every new operation carries correct `read`/`write`/`filesystem`/`destructive` and transactional classifications. |
@@ -44,7 +44,7 @@ Reference points confirmed by research: DaVinci Resolve 21.1 (Sept 2026) ships a
 
 ## Key Technical Decisions
 
-1. **Keep the two-tool core; deepen everything around it.** `search` + `execute` already matches the Cloudflare Code Mode shape and scales to arbitrary catalogue size. Depth comes from implementing all operations underneath, plus `structuredContent`/output schemas, MCP resources, prompts, and image content — not from registering one MCP tool per operation.
+1. **Keep the two-tool core; deepen everything around it.** `search` + `execute` already matches the code-mode two-tool shape and scales to arbitrary catalogue size. Depth comes from implementing all operations underneath, plus `structuredContent`/output schemas, MCP resources, prompts, and image content — not from registering one MCP tool per operation.
 2. **Synthesize strokes through `BrushStroke`/`WarpStroke`, not UI gestures.** For `paint.*` operations, construct `BrushStroke(layer:mask:settings:canvas:)` directly, `append(_:)` the document-space points, and commit via `session.commitRasterEdit(_:name:)`. Spot heal is `BrushSettings.healing = true` + `healingMode`; clone uses the clone-sample path; smear/liquify uses `WarpStroke`. This avoids tool switching, stays deterministic, and produces normal undo entries.
 3. **Selections via `applySelection(shape:mode:name:)`.** Rectangle, ellipse and polygon are generated `CGPath`s combined with `SelectionMode` (replace/add/subtract). Magic wand calls `session.magicWand(at:mode:)` directly with `WandSettings` (tolerance, contiguous, sample size).
 4. **Filters and adjustments through the UI's own preview-commit pipeline.** `session.beginFilter(_:)` → `updateFilter(_:preview:)` → `commitFilter()` for `filter.apply`; the same pipeline handles `FilterKind.contentAwareFill` and `removeBackground` (which have their own commit paths). `adjustment.add`/`update` map to `session.addAdjustment(kind)` / `updateAdjustment(_:value:)`. Because these reuse the native pipeline, undo grouping and live-render behaviour come free.
@@ -112,7 +112,7 @@ flowchart TB
 - **Capability-level permission profiles** (per-operation allow/deny beyond filesystem roots + destructive confirm) — called out in `docs/security.md` as a known limitation.
 - **Upstream PR submission**: `docs/upstream-proposal.md` is written here; actually filing the issue/PR against `robbietilton/Compositor` is a separate, human-owned step.
 - **Signed/prebuilt Compositor+MCP bundle** for non-developer users.
-- **Code-mode `code` tool** (model-written JS composed server-side, Cloudflare's deeper variant): worth evaluating after parity lands — the batch/atomic execute already covers most of its value for a stateful local app.
+- **Code-mode `code` tool** (model-written JS composed server-side, a deeper variant of this pattern): worth evaluating after parity lands — the batch/atomic execute already covers most of its value for a stateful local app.
 
 ---
 
@@ -336,7 +336,7 @@ flowchart TB
 
 ### U8. Customer-facing documentation and OSS hygiene
 
-**Goal:** README reads like the DaVinci/Cloudflare-class project it is; standard OSS files exist; contributor material stays under `docs/`.
+**Goal:** README reads like the best-in-class project it is; standard OSS files exist; contributor material stays under `docs/`.
 
 **Requirements:** R5, R3
 
@@ -351,7 +351,7 @@ flowchart TB
 - `.github/ISSUE_TEMPLATE/*.md`, `.github/PULL_REQUEST_TEMPLATE.md` (new)
 - `CHANGELOG.md`
 
-**Approach:** Rewrite README user-first: what it does + a realistic prompt→result example (DaVinci-manual style), 3-step quickstart (`npx` stanza, bridge install, authorised roots), feature table linking to `docs/capabilities.md`, security summary linking to `docs/security.md`, then contributing/development pointer. Add prompt examples showing end-to-end tasks ("cut out the subject and export a transparent PNG"). `upstream-proposal.md` drafts the issue text proposing an official `MCPBridge` hook to upstream (the three app-delegate insertion points, offered as a PR). Hygiene files follow standard Contributor Covenant + minimal issue/PR templates.
+**Approach:** Rewrite README user-first: what it does + a realistic prompt→result example (manual style), 3-step quickstart (`npx` stanza, bridge install, authorised roots), feature table linking to `docs/capabilities.md`, security summary linking to `docs/security.md`, then contributing/development pointer. Add prompt examples showing end-to-end tasks ("cut out the subject and export a transparent PNG"). `upstream-proposal.md` drafts the issue text proposing an official `MCPBridge` hook to upstream (the three app-delegate insertion points, offered as a PR). Hygiene files follow standard Contributor Covenant + minimal issue/PR templates.
 
 **Test scenarios:**
 - Happy path: every README command (npx stanza, doctor, install-bridge, configure) was executed in U7 verification — docs claim nothing untested.
@@ -403,6 +403,6 @@ flowchart TB
 
 - This repo: `packages/protocol/src/capabilities.ts`, `packages/mcp-server/src/*`, `compositor/Compositor/MCP/*.swift`, `docs/*`.
 - Upstream `robbietilton/Compositor` (cloned): `Compositor/Document/EditorSession.swift`, `EditorSession+Brush.swift`, `BrushStroke.swift`, `MagicWand.swift`, `Selection.swift`, `Filters.swift`, `ContentFill.swift`, `SubjectRemoval.swift`, `LayerAdjustment.swift`, `AdjustmentEditing.swift`, `Crop.swift`, `Distort.swift`, `Gradient.swift`, `ShapeTool.swift`, `SmudgeLiquify.swift`, `LayerGroups.swift`, `CanvasSize.swift`, `IO/ImageResizer.swift`, `IO/CompositorApplicationDelegate.swift`.
-- DaVinci Resolve 21.1 (Sept 2026): native MCP server in Studio edition — task-level natural-language control; third-party Resolve MCPs at 295–334 tools for full coverage.
-- Cloudflare API MCP / Code Mode docs and blog: two-tool `search`/`execute` shape, ~1k token footprint — confirms the architecture; this plan deepens underneath and around it rather than changing the shape.
+- Major creative desktop apps ship native MCP servers — task-level natural-language control; third-party MCP surfaces reach 295–334 tools for full coverage.
+- Code-mode API MCP references: two-tool `search`/`execute` shape, ~1k token footprint — confirms the architecture; this plan deepens underneath and around it rather than changing the shape.
 - MCP TypeScript SDK v2 (`@modelcontextprotocol/server` 2.0.0) — verified published package.

@@ -22,7 +22,7 @@ async function withDiscovery(
   mode: number,
   body: (file: string) => Promise<void>,
 ): Promise<void> {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-test-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-test-"));
   const file = path.join(directory, "bridge.json");
   try {
     await fs.writeFile(file, JSON.stringify(value), { encoding: "utf8", mode });

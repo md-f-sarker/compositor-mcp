@@ -2,7 +2,7 @@
   "mcpServers": {
     "compositor": {
       "command": "npx",
-      "args": ["-y", "compositor-mcp"]
+      "args": ["-y", "compositor-mcp-server"]
     },
     "compositor-dev": {
       "command": "node",

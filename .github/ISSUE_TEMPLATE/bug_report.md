@@ -23,7 +23,7 @@ What you expected to happen.
 
 ## Environment
 
-- compositor-mcp version (`npm view compositor-mcp version` or package version):
+- compositor-mcp-server version (`npm view compositor-mcp-server version` or package version):
 - Node.js version:
 - macOS version:
 - Upstream Compositor commit (`git -C /path/to/Compositor rev-parse HEAD`):
@@ -31,4 +31,4 @@ What you expected to happen.
 
 ## Output
 
-Paste relevant output — e.g. `npx -y compositor-mcp doctor`, client logs, or the failing `execute` response. **Redact bridge tokens and private paths.**
+Paste relevant output — e.g. `npx -y compositor-mcp-server doctor`, client logs, or the failing `execute` response. **Redact bridge tokens and private paths.**

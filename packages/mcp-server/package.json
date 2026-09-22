@@ -1,10 +1,10 @@
 {
-  "name": "compositor-mcp",
+  "name": "compositor-mcp-server",
   "version": "0.1.0",
   "description": "Deep Model Context Protocol integration for the Compositor macOS image editor: stdio MCP server plus doctor, install-bridge and configure CLI helpers",
   "type": "module",
   "bin": {
-    "compositor-mcp": "./dist/index.js"
+    "compositor-mcp-server": "./dist/index.js"
   },
   "files": [
     "dist",
