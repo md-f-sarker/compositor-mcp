@@ -17,7 +17,7 @@ set -eu
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSITOR="${1:?usage: validate-native.sh <compositor-checkout>}"
-WORK="${TMPDIR:-/tmp}/compositor-mcp-validation"
+WORK="${TMPDIR:-/tmp}/compositor-mcp-server-validation"
 mkdir -p "$WORK/sparkle-stub"
 
 cat > "$WORK/sparkle-stub/Sparkle.swift" <<'STUB'

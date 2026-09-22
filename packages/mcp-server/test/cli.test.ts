@@ -55,7 +55,7 @@ async function withFakeBridge(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as net.AddressInfo).port;
 
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-cli-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-cli-"));
   const discoveryFile = path.join(directory, "bridge.json");
   await fs.writeFile(
     discoveryFile,
@@ -101,7 +101,7 @@ test("doctor against the mock bridge reports a healthy summary", async () => {
 });
 
 test("doctor against a live bridge prints version, capabilities and roots", async () => {
-  const rootsDir = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-config-"));
+  const rootsDir = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-config-"));
   const pictures = path.join(rootsDir, "Pictures");
   await fs.mkdir(pictures);
   try {
@@ -147,7 +147,7 @@ test("doctor with no discovery file fails with bridge_not_running guidance", asy
 });
 
 test("doctor refuses a world-readable discovery file", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-cli-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-cli-"));
   const file = path.join(directory, "bridge.json");
   await fs.writeFile(file, JSON.stringify({ protocol: "compositor-bridge/1" }), { mode: 0o644 });
   await fs.chmod(file, 0o644);
@@ -161,7 +161,7 @@ test("doctor refuses a world-readable discovery file", async () => {
 });
 
 test("configure writes owner-only config.json with resolved roots", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-config-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-config-"));
   const pictures = path.join(directory, "My Pictures");
   const configDir = path.join(directory, "MCP");
   await fs.mkdir(pictures);
@@ -182,7 +182,7 @@ test("configure writes owner-only config.json with resolved roots", async () => 
 });
 
 test("configure merges an existing config.json instead of clobbering its flags", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-config-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-config-"));
   const pictures = path.join(directory, "Pictures");
   const downloads = path.join(directory, "Downloads");
   const configDir = path.join(directory, "MCP");
@@ -214,7 +214,7 @@ test("configure merges an existing config.json instead of clobbering its flags",
 });
 
 test("configure expands ~ and rejects non-directories", async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-home-"));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "compositor-mcp-server-home-"));
   const configDir = path.join(home, "MCP");
   try {
     const missing = captureIo({ COMPOSITOR_MCP_CONFIG_DIR: configDir, HOME: home });

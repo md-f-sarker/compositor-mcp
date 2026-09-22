@@ -22,6 +22,6 @@ jobs:
       - name: Smoke-test the packed tarball
         run: npm run pack:smoke
       - name: Publish to npm
-        run: npm publish -w compositor-mcp --provenance
+        run: npm publish -w compositor-mcp-server --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

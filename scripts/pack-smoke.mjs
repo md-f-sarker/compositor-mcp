@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Packs compositor-mcp, installs the tarball into a scratch project and runs
+// Packs compositor-mcp-server, installs the tarball into a scratch project and runs
 // the packed CLI — the release-safety smoke shared by ci.yml and release.yml.
 // Beyond "the bin starts", this exercises the bundled bridge installer
 // end-to-end: the packed package's own assets must be able to patch a
@@ -11,12 +11,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const scratch = mkdtempSync(path.join(tmpdir(), "compositor-mcp-pack-"));
+const scratch = mkdtempSync(path.join(tmpdir(), "compositor-mcp-server-pack-"));
 
 try {
   // npm pack prints the tarball filename as its last stdout line; prepack
   // rebuilds dist and syncs the bundled assets automatically.
-  const packed = execFileSync("npm", ["pack", "-w", "compositor-mcp", "--pack-destination", scratch], {
+  const packed = execFileSync("npm", ["pack", "-w", "compositor-mcp-server", "--pack-destination", scratch], {
     cwd: root,
     encoding: "utf8",
   });
@@ -27,8 +27,8 @@ try {
   execFileSync("npm", ["init", "-y"], { cwd: project, stdio: "ignore" });
   execFileSync("npm", ["install", tarball], { cwd: project, stdio: "inherit" });
 
-  const installed = path.join(project, "node_modules", "compositor-mcp");
-  const bin = path.join(project, "node_modules", ".bin", "compositor-mcp");
+  const installed = path.join(project, "node_modules", "compositor-mcp-server");
+  const bin = path.join(project, "node_modules", ".bin", "compositor-mcp-server");
   execFileSync(bin, ["--help"], { stdio: "inherit" });
 
   // The tarball must carry the bundled installer and the Swift sources it

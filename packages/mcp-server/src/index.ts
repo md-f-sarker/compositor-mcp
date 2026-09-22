@@ -26,6 +26,6 @@ try {
 } catch (error) {
   // A top-level failure (config IO, server startup) exits as a coded software
   // error with a clean message — never an unhandled rejection stack.
-  process.stderr.write(`compositor-mcp: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`compositor-mcp-server: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 70; // EXIT_SOFTWARE
 }

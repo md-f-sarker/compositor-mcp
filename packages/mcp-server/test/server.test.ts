@@ -266,7 +266,7 @@ test("previews over 1 MiB stay path-only but still fill the latest resource", as
 });
 
 test("resource reads without a bridge surface the retryable bridge_not_running error", async () => {
-  const transport = new SocketBridgeTransport({ discoveryPath: "/nonexistent/compositor-mcp/bridge.json" });
+  const transport = new SocketBridgeTransport({ discoveryPath: "/nonexistent/compositor-mcp-server/bridge.json" });
   const { request } = await createTestClient(transport);
 
   await assert.rejects(
@@ -308,6 +308,15 @@ test("prompts/list and prompts/get serve the workflow recipes", async () => {
   assert.match(text, /document\.export/);
   assert.match(text, /document\.resizeImage/);
   assert.match(text, /1600/);
+});
+
+test("prompts/get accepts omitted arguments — the MCP spec makes them optional", async () => {
+  const { request } = await createTestClient(new MockBridgeTransport());
+  for (const prompt of WORKFLOW_PROMPTS) {
+    const got = await request<{ messages: Array<{ content: { text: string } }> }>("prompts/get", { name: prompt.name });
+    assert.ok(got.messages.length > 0, `${prompt.name} returned no messages without arguments`);
+    assert.match(got.messages[0]!.content.text, /execute/);
+  }
 });
 
 test("every workflow prompt names only implemented catalogue operations", () => {

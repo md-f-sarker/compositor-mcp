@@ -10,7 +10,7 @@ Validation completed for the deep-parity branch on 20 September 2026.
 - Every catalogue example validates against its advertised JSON schema.
 - The TypeScript capability catalogue and Swift router agree on all **62 implemented** operation names, destructive classifications, read-only classifications and non-transactional classifications.
 - Installer smoke test passes, including repeat installation and clean uninstall.
-- `npm pack` produces a working standalone tarball; `compositor-mcp --help`, `doctor`, `configure`, and `install-bridge` verified from the packed artifact.
+- `npm pack` produces a working standalone tarball; `compositor-mcp-server --help`, `doctor`, `configure`, and `install-bridge` verified from the packed artifact.
 
 ## Live native validation — 20 September 2026
 
@@ -33,6 +33,6 @@ Performed with `scripts/validate-native.sh` against upstream `robbietilton/Compo
 
 1. Build the patched app in Xcode 26 on macOS 26 and run upstream's test suites.
 2. Spot-check visual output of the new paint/filter operations against the UI equivalents.
-3. Publish `compositor-mcp` to npm and record the release tag.
+3. Publish `compositor-mcp-server` to npm and record the release tag.
 
 The native integration is validated as far as a GUI-less environment can take it: every operation compiles against real upstream sources and executes correctly against a live `EditorSession`.
