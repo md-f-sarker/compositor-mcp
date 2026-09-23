@@ -1,12 +1,13 @@
 # Compositor MCP
 
 [![CI](https://github.com/md-f-sarker/compositor-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/md-f-sarker/compositor-mcp/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/compositor-mcp-server)](https://www.npmjs.com/package/compositor-mcp-server)
-[![License: MIT](https://img.shields.io/npm/l/compositor-mcp-server)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
 
 **Status: public beta** — the bridge is exercised against upstream Compositor `75c4219` on macOS 26; interfaces may still evolve.
+
+> **npm publication pending.** The source is available, but `compositor-mcp-server` has not yet been published to npm. Use the source-install instructions below; the npm quickstart and badge will be added after registry publication is verified.
 
 Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **62 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
 
@@ -16,51 +17,71 @@ You describe the edit in natural language; the assistant plans and executes it a
 
 > **You:** "Cut out the subject, put it on its own layer and export a transparent PNG for the web."
 >
-> **Assistant:** selects the subject layer → runs `filter.apply` *Remove Background* → adds a backdrop layer → feathers the mask edge → renders a preview to check the composite → exports `hero.png` with alpha. Every step is a native, undoable edit — the whole pass lands in Compositor's history like work you did by hand.
+> **Assistant:** selects the subject layer → runs `filter.apply` *Remove Background* → refines the mask edge → renders a preview to check the cutout → exports `hero.png` with alpha. Editing operations use Compositor's native history; exports write separate files and cannot be undone through editor history.
 
-Or: *"Heal out the watermark in the corner,"* *"resize this to 1600px wide and export PNG + JPEG,"* *"duplicate the layer, grade it warm, and save a variant"* — end-to-end tasks, not single clicks.
+Or: *"Retouch a blemish in this portrait,"* *"resize this to 1600px wide and export PNG + JPEG,"* *"duplicate the layer, grade it warm, and save a variant"* — end-to-end tasks, not single clicks.
 
 The surface stays small: a `search` tool finds the right operation and returns only its schema, an `execute` tool runs operations singly or as an atomic all-or-nothing batch, MCP resources expose live editor state and rendered previews, and workflow prompts package complete recipes for common jobs.
 
-## Quickstart
+## Quickstart — install from source
 
-### 1. Add the server to your MCP client
+You need macOS 26, Xcode 26, Node.js 22 or newer, Git, and a local Compositor source checkout. A stock Compositor app without the native bridge is not sufficient.
+
+### 1. Build the MCP server
+
+```bash
+git clone https://github.com/md-f-sarker/compositor-mcp.git
+cd compositor-mcp
+npm ci
+npm run build
+npm run check
+```
+
+Keep this checkout: your MCP client will run its compiled server. Use the absolute path to `packages/mcp-server/dist/index.js` in the next step.
+
+### 2. Add the server to your MCP client
+
+Replace `/absolute/path/to/compositor-mcp` with the checkout directory from step 1:
 
 ```json
 {
   "mcpServers": {
     "compositor": {
-      "command": "npx",
-      "args": ["-y", "compositor-mcp-server"]
+      "command": "node",
+      "args": ["/absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-- **Claude Code:** `claude mcp add compositor -- npx -y compositor-mcp-server`
+- **Claude Code:** `claude mcp add compositor -- node /absolute/path/to/compositor-mcp/packages/mcp-server/dist/index.js`
 - **Claude Desktop / other clients:** merge the JSON stanza above into the client's MCP configuration.
-- Prefer a global install? `npm i -g compositor-mcp-server`, then use `"command": "compositor-mcp-server"` with no args.
+- If a desktop client cannot find `node`, replace `"node"` with the absolute executable path returned by `command -v node` in your terminal.
 
-### 2. Install the native bridge and authorize filesystem roots
+### 3. Install the native bridge and authorise filesystem roots
 
-The bridge is a small set of Swift files installed into your Compositor checkout:
+Use a dedicated Compositor development checkout. The tested upstream commit is `75c421980ad2d289ea8244c54cfa3a649678d259`.
 
-```bash
-npx -y compositor-mcp-server install-bridge /absolute/path/to/Compositor
-npx -y compositor-mcp-server configure "$HOME/Pictures" "$HOME/Downloads"
-```
+> **Development-build security notice:** `install-bridge` disables App Sandbox and clears the configured entitlements in the affected build settings — the bridge's loopback listener and authorised-root file access do not work with the stock sandboxed configuration. Original values are recorded in `.compositor-mcp-install-state.json`, and `uninstall-bridge` restores the recorded settings where they have not subsequently been edited. Work on copies of important images and use a dedicated development checkout.
 
-> **Development-build security notice:** `install-bridge` disables App Sandbox and clears the configured entitlements in the dev build — the bridge's loopback listener and authorized-root file access cannot run inside the stock sandboxed entitlements. Original values are recorded in `.compositor-mcp-install-state.json` and `uninstall-bridge` restores exactly what was there. Use a dedicated Compositor development checkout.
-
-Then open `Compositor.xcodeproj`, build and run the **Compositor** scheme once (Xcode file-system-synchronised groups pick up the new `Compositor/MCP` files automatically). Restart Compositor after changing configuration — file operations are denied outside the authorized roots.
-
-### 3. Verify the setup
+From the `compositor-mcp` directory:
 
 ```bash
-npx -y compositor-mcp-server doctor
+node packages/mcp-server/dist/index.js install-bridge /absolute/path/to/Compositor
+node packages/mcp-server/dist/index.js configure "$HOME/Pictures" "$HOME/Downloads"
 ```
 
-`doctor` checks the bridge discovery file, pings the running app, and reports the app version, protocol, implemented capability count, revision and authorized roots.
+Then open `Compositor.xcodeproj`, build and run the **Compositor** scheme once (Xcode file-system-synchronised groups pick up the new `Compositor/MCP` files automatically). Restart Compositor after changing configuration — file operations are denied outside the authorised roots.
+
+### 4. Verify the setup
+
+From the `compositor-mcp` directory, with the patched Compositor application running:
+
+```bash
+node packages/mcp-server/dist/index.js doctor
+```
+
+`doctor` checks the bridge discovery file, pings the running app, and reports the app version, protocol, implemented capability count, revision and authorised roots.
 
 ## What you can control
 
@@ -104,12 +125,9 @@ Where the client supports elicitation, destructive calls can confirm interactive
 - **Destructive operations require explicit confirmation**; atomic batches roll back only the history entry they created.
 - Optional owner-only **JSONL audit log** of every attempted operation.
 
-Your image data stays local — the bridge never leaves `127.0.0.1`. Rendered
-previews and document state are returned **to your MCP client and the model
-behind it**, so what happens to them beyond Compositor is up to that model
-provider's data policy.
+The bridge connection is local to your Mac. Rendered previews and document state are returned **to your MCP client**, which may send them to a remote model provider. Local bridge transport does not guarantee local-only image processing; check your client's configuration and your model provider's data policy before using private images.
 
-See [docs/security.md](docs/security.md) for the threat model and known limitations.
+See [docs/security.md](docs/security.md) for the threat model and known limitations, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## Requirements
 
@@ -119,7 +137,7 @@ See [docs/security.md](docs/security.md) for the threat model and known limitati
 - A local checkout of [Compositor](https://github.com/robbietilton/Compositor)
 - An MCP client that speaks stdio JSON-RPC — tested with Claude Code, Claude Desktop and Codex; any client on MCP protocol revisions supported by the TypeScript SDK works.
 
-The Swift integration was audited against upstream Compositor commit `75c421980ad2d289ea8244c54cfa3a649678d259`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report — it fails only if the app delegate has moved beyond its supported patch points.
+The Swift integration was audited against upstream Compositor commit `75c421980ad2d289ea8244c54cfa3a649678d259`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report. A cleanly applied patch on a newer upstream revision does not guarantee that the application will compile or behave identically.
 
 ## Known limits
 
@@ -145,7 +163,7 @@ examples/                MCP client configurations and request examples
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the development guide in [docs/development.md](docs/development.md). Pull requests should pass `npm run check` and note the upstream Compositor commit used for native testing.
 
-Quick development loop:
+After the source-install steps above, the development loop is:
 
 ```bash
 # Run without Compositor using the deterministic mock bridge
@@ -159,15 +177,21 @@ The mock is a behavioural harness, not a rendering emulator: it covers about 40 
 
 ## Validation status
 
-The TypeScript projects build and type-check, all tests pass, the Swift sources pass parser validation, the capability parity check passes, and the installer/reinstaller/uninstaller smoke test runs in CI. A live AppKit/Xcode build and full bridge test on macOS 26 are tracked in [docs/release-validation.md](docs/release-validation.md).
+CI checks the TypeScript build and types, protocol/server tests, capability parity, generated documentation, installer/reinstaller/uninstaller behaviour and the standalone npm tarball. The release preflight workflow additionally scans fetched Git and pull-request history for secrets.
+
+Native validation records, including the real application build and bridge checks on macOS 26, are in [docs/release-validation.md](docs/release-validation.md). The Ubuntu CI jobs do not replace a native Xcode build or visual testing of edited images.
 
 ## Uninstall from Compositor
 
+From the `compositor-mcp` directory:
+
 ```bash
-npx -y compositor-mcp-server uninstall-bridge /absolute/path/to/Compositor
-# or, from a source checkout:
+node packages/mcp-server/dist/index.js uninstall-bridge /absolute/path/to/Compositor
+# Alternatively:
 ./scripts/uninstall-from-compositor.sh /absolute/path/to/Compositor
 ```
+
+Rebuild Compositor after uninstalling the bridge, and remove its entry from your MCP client's configuration if it is no longer needed.
 
 ## Licensing
 
