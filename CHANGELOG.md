@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-09-22
 
 - Implemented the remaining 20 catalogued capabilities natively — geometry and layer structure (`document.resizeCanvas`, `document.resizeImage`, `document.crop`, `layer.ungroup`, `layer.featherMask`, `layer.distort`), selection tools (`selection.rectangle`, `selection.ellipse`, `selection.polygon`, `selection.magicWand`), painting and retouching (`paint.brushStroke`, `paint.spotHeal`, `paint.clone`, `paint.blur`, `paint.gradient`, `paint.shape`), and adjustments/filters (`adjustment.add`, `adjustment.update`, `filter.apply`, `pixels.contentAwareFill`). The catalogue is now 62/62 implemented.
 - Completed the capability contracts: every catalogue entry carries a strict input schema, aliases, tags and validated examples; added `scripts/generate-capability-docs.mjs`, which emits `docs/capabilities.md` from the registry and is checked in `npm run check`.
@@ -26,9 +26,6 @@
 - Fixed non-atomic batches leaving a second failed operation's changes behind: the rollback accumulator's `||` short-circuit skipped `rollbackFailedOperation` once one rollback had succeeded.
 - Hardened the native bridge against local resource exhaustion: concurrent connections capped at 32, the serial work queue bounded at 64, a 30s receive deadline reclaims abandoned connections, and requests are now decoded and authenticated *before* being admitted to the queue.
 - Requires Node.js 22 or newer (Node 20 is EOL); CI uses `npm ci`; the release workflow fails if the tag doesn't match `package.json` version.
-
-## 0.1.0 - 2026-09-19
-
 - Added token-efficient `search` and `execute` MCP tools.
 - Added typed catalogue of 62 editor capabilities.
 - Implemented 42 core native operations.
