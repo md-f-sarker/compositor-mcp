@@ -218,9 +218,11 @@ final class CompositorMCPCommandRouter {
                 ]))
                 auditEntries.append((operation.name, false,
                     ["code": .string(error.code), "message": .string(error.message)]))
-                undidFailedOperation = undidFailedOperation
-                    || rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
-                                               grouped: shouldGroupUndo)
+                // Rollback must run for every failed operation — `||` short-circuits,
+                // so folding the call into the accumulator would skip it after the first success.
+                let didUndoCommandError = rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
+                                                                  grouped: shouldGroupUndo)
+                undidFailedOperation = undidFailedOperation || didUndoCommandError
                 if atomic { break }
             } catch {
                 failed = true
@@ -230,9 +232,9 @@ final class CompositorMCPCommandRouter {
                 ]))
                 auditEntries.append((operation.name, false,
                     ["code": .string("internal_error"), "message": .string(error.localizedDescription)]))
-                undidFailedOperation = undidFailedOperation
-                    || rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
-                                               grouped: shouldGroupUndo)
+                let didUndoInternalError = rollbackFailedOperation(on: operationSession, undoCountBefore: undoCountBeforeOperation,
+                                                                   grouped: shouldGroupUndo)
+                undidFailedOperation = undidFailedOperation || didUndoInternalError
                 if atomic { break }
             }
         }

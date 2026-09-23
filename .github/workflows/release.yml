@@ -19,6 +19,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run check
+      - name: Verify the tag matches the package version
+        run: |
+          PKG_VERSION="$(node -p "require('./packages/mcp-server/package.json').version")"
+          test "v${PKG_VERSION}" = "${GITHUB_REF_NAME}"
       - name: Smoke-test the packed tarball
         run: npm run pack:smoke
       - name: Publish to npm

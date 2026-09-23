@@ -6,6 +6,8 @@
 
 **Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
 
+**Status: public beta** — the bridge is exercised against upstream Compositor `75c4219` on macOS 26; interfaces may still evolve.
+
 Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **62 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
 
 ## What it does
@@ -47,6 +49,8 @@ The bridge is a small set of Swift files installed into your Compositor checkout
 npx -y compositor-mcp-server install-bridge /absolute/path/to/Compositor
 npx -y compositor-mcp-server configure "$HOME/Pictures" "$HOME/Downloads"
 ```
+
+> **Development-build security notice:** `install-bridge` disables App Sandbox and clears the configured entitlements in the dev build — the bridge's loopback listener and authorized-root file access cannot run inside the stock sandboxed entitlements. Original values are recorded in `.compositor-mcp-install-state.json` and `uninstall-bridge` restores exactly what was there. Use a dedicated Compositor development checkout.
 
 Then open `Compositor.xcodeproj`, build and run the **Compositor** scheme once (Xcode file-system-synchronised groups pick up the new `Compositor/MCP` files automatically). Restart Compositor after changing configuration — file operations are denied outside the authorized roots.
 
@@ -100,13 +104,18 @@ Where the client supports elicitation, destructive calls can confirm interactive
 - **Destructive operations require explicit confirmation**; atomic batches roll back only the history entry they created.
 - Optional owner-only **JSONL audit log** of every attempted operation.
 
+Your image data stays local — the bridge never leaves `127.0.0.1`. Rendered
+previews and document state are returned **to your MCP client and the model
+behind it**, so what happens to them beyond Compositor is up to that model
+provider's data policy.
+
 See [docs/security.md](docs/security.md) for the threat model and known limitations.
 
 ## Requirements
 
 - macOS 26
 - Xcode 26
-- Node.js 20.12 or newer
+- Node.js 22 or newer
 - A local checkout of [Compositor](https://github.com/robbietilton/Compositor)
 - An MCP client that speaks stdio JSON-RPC — tested with Claude Code, Claude Desktop and Codex; any client on MCP protocol revisions supported by the TypeScript SDK works.
 

@@ -87,8 +87,10 @@ PY
 PROJECT="$ROOT/Compositor.xcodeproj/project.pbxproj"
 [[ -f "$PROJECT" ]] || { echo "Missing $PROJECT" >&2; exit 66; }
 
-python3 - "$PROJECT" <<'PY'
+python3 - "$PROJECT" "$ROOT/.compositor-mcp-install-state.json" <<'PY'
 from pathlib import Path
+import json
+import re
 import sys
 
 # The bridge hosts a loopback listener and performs file I/O under the
@@ -96,19 +98,43 @@ import sys
 # (the stock entitlements grant only user-selected file access), so the
 # dev build must run unsandboxed. Mirrors the xcodebuild overrides
 # ENABLE_APP_SANDBOX=NO and CODE_SIGN_ENTITLEMENTS= empty.
+#
+# Original values are recorded in .compositor-mcp-install-state.json so
+# the uninstaller restores exactly what was here before instead of
+# guessing upstream defaults (a checkout that was already unsandboxed
+# must stay that way).
 path = Path(sys.argv[1])
+state_path = Path(sys.argv[2])
 text = path.read_text()
-original = text
-text = text.replace("ENABLE_APP_SANDBOX = YES;", "ENABLE_APP_SANDBOX = NO;")
-text = text.replace(
-    "CODE_SIGN_ENTITLEMENTS = Config/Compositor.entitlements;",
-    'CODE_SIGN_ENTITLEMENTS = "";',
-)
-if text != original:
+original_text = text
+
+desired = {"ENABLE_APP_SANDBOX": "NO", "CODE_SIGN_ENTITLEMENTS": '""'}
+originals = {}
+
+for key, wanted in desired.items():
+    pattern = re.compile(rf"{key} = ([^;]+);")
+    seen = {m.group(1).strip() for m in pattern.finditer(text)}
+    if seen == {wanted}:
+        # Already at the desired value everywhere — nothing recorded, nothing changed.
+        continue
+    originals[key] = sorted(seen)
+    text = pattern.sub(f"{key} = {wanted};", text)
+
+if text != original_text:
     path.write_text(text)
     print(f"Disabled App Sandbox for the MCP bridge in {path}")
 else:
     print(f"App Sandbox already disabled (or settings moved): {path}")
+
+state = {}
+if state_path.exists():
+    try:
+        state = json.loads(state_path.read_text())
+    except ValueError:
+        state = {}
+state.setdefault("project", "Compositor.xcodeproj/project.pbxproj")
+state.setdefault("originalBuildSettings", {}).update(originals)
+state_path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 
 echo "Installed Compositor MCP bridge sources into $DEST_DIR"
