@@ -10,6 +10,12 @@ final class CompositorMCPBridge {
     private static let maximumRequestBytes = 8 * 1024 * 1024
     /// Far above any legitimate request shape; guards the recursive JSON decoder.
     private static let maximumJSONDepth = 256
+    /// Bounds on partially-open connections and the serial work queue — a local
+    /// process that opens sockets but never sends a valid request cannot hold
+    /// unbounded slots.
+    private static let maximumConcurrentConnections = 32
+    private static let maximumPendingRequests = 64
+    private static let receiveDeadlineSeconds: TimeInterval = 30
 
     private let workspace: ProjectWorkspace
     private let router: CompositorMCPCommandRouter
@@ -21,8 +27,12 @@ final class CompositorMCPBridge {
     /// inside `router.handle`, so without serialization two connections' requests would
     /// interleave on the main actor and corrupt shared undo groups, idempotency
     /// bookkeeping, and optimistic preconditions.
-    private var pendingRequests: [(data: Data, token: String, connection: NWConnection)] = []
+    private var pendingRequests: [(request: CompositorMCPBridgeRequest, connection: NWConnection)] = []
     private var isProcessingRequest = false
+    /// Accepted connections still streaming their request. Entries live from accept()
+    /// until the request is complete or the connection dies; a receive deadline
+    /// reclaims slots a sender abandons mid-request.
+    private var openConnections = Set<ObjectIdentifier>()
 
     init(workspace: ProjectWorkspace) {
         self.workspace = workspace
@@ -115,7 +125,20 @@ final class CompositorMCPBridge {
             connection.cancel()
             return
         }
+        let identifier = ObjectIdentifier(connection)
+        guard openConnections.count < Self.maximumConcurrentConnections else {
+            connection.cancel()
+            return
+        }
+        openConnections.insert(identifier)
         connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + Self.receiveDeadlineSeconds) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.openConnections.contains(identifier) else { return }
+                self.openConnections.remove(identifier)
+                connection.cancel()
+            }
+        }
         receive(on: connection, buffer: Data(), token: token)
     }
 
@@ -124,6 +147,7 @@ final class CompositorMCPBridge {
             Task { @MainActor in
                 guard let self else { connection.cancel(); return }
                 if let error {
+                    self.openConnections.remove(ObjectIdentifier(connection))
                     await self.reject(id: "unknown", code: "bridge_receive_failed", message: error.localizedDescription, on: connection)
                     return
                 }
@@ -131,6 +155,7 @@ final class CompositorMCPBridge {
                 var next = buffer
                 if let data { next.append(data) }
                 if next.count > Self.maximumRequestBytes {
+                    self.openConnections.remove(ObjectIdentifier(connection))
                     await self.reject(id: "unknown", code: "request_too_large", message: "Bridge requests are limited to 8 MiB.", on: connection)
                     return
                 }
@@ -139,6 +164,7 @@ final class CompositorMCPBridge {
                     let payload = next[..<newline]
                     self.process(Data(payload), expectedToken: token, on: connection)
                 } else if complete {
+                    self.openConnections.remove(ObjectIdentifier(connection))
                     await self.reject(id: "unknown", code: "incomplete_request", message: "Request must end with a newline.", on: connection)
                 } else {
                     self.receive(on: connection, buffer: next, token: token)
@@ -147,40 +173,46 @@ final class CompositorMCPBridge {
         }
     }
 
-    /// Enqueues the request and starts the serial drain if it is not already running.
+    /// Validates, authenticates and enqueues the request, then starts the serial
+    /// drain if it is not already running. Depth check, decode and token check
+    /// all happen BEFORE a queue slot is granted — unauthenticated or malformed
+    /// payloads never consume capacity on the editing-work queue.
     private func process(_ data: Data, expectedToken: String, on connection: NWConnection) {
-        pendingRequests.append((data, expectedToken, connection))
+        openConnections.remove(ObjectIdentifier(connection))
+
+        guard !Self.jsonDepthExceeds(data, limit: Self.maximumJSONDepth) else {
+            Task { await self.reject(id: "unknown", code: "invalid_json", message: "Request JSON exceeds the maximum nesting depth.", on: connection) }
+            return
+        }
+        let request: CompositorMCPBridgeRequest
+        do {
+            request = try JSONDecoder().decode(CompositorMCPBridgeRequest.self, from: data)
+        } catch {
+            Task { await self.reject(id: "unknown", code: "invalid_json", message: "Request is not valid compositor-bridge JSON.", on: connection) }
+            return
+        }
+        guard constantTimeEquals(request.token, expectedToken) else {
+            Task { await self.reject(id: request.id, method: request.method, code: "unauthorised", message: "Bridge authentication failed.", on: connection) }
+            return
+        }
+        guard pendingRequests.count < Self.maximumPendingRequests else {
+            Task { await self.reject(id: request.id, method: request.method, code: "too_many_requests", message: "Bridge request queue is full; retry shortly.", on: connection) }
+            return
+        }
+
+        pendingRequests.append((request, connection))
         guard !isProcessingRequest else { return }
         isProcessingRequest = true
         Task { @MainActor in
             while !self.pendingRequests.isEmpty {
                 let next = self.pendingRequests.removeFirst()
-                await self.handle(next.data, expectedToken: next.token, on: next.connection)
+                await self.handle(next.request, on: next.connection)
             }
             self.isProcessingRequest = false
         }
     }
 
-    private func handle(_ data: Data, expectedToken: String, on connection: NWConnection) async {
-        // Bound nesting depth before decoding: CompositorMCPJSON decodes recursively,
-        // so an unbounded-depth payload could overflow the stack before auth runs.
-        guard !Self.jsonDepthExceeds(data, limit: Self.maximumJSONDepth) else {
-            await reject(id: "unknown", code: "invalid_json", message: "Request JSON exceeds the maximum nesting depth.", on: connection)
-            return
-        }
-
-        let request: CompositorMCPBridgeRequest
-        do {
-            request = try JSONDecoder().decode(CompositorMCPBridgeRequest.self, from: data)
-        } catch {
-            await reject(id: "unknown", code: "invalid_json", message: "Request is not valid compositor-bridge JSON.", on: connection)
-            return
-        }
-
-        guard constantTimeEquals(request.token, expectedToken) else {
-            await reject(id: request.id, method: request.method, code: "unauthorised", message: "Bridge authentication failed.", on: connection)
-            return
-        }
+    private func handle(_ request: CompositorMCPBridgeRequest, on connection: NWConnection) async {
         let response = await router.handle(request)
         if !response.ok {
             // Router-level rejections (confirmation_required, filesystem_denied, …)

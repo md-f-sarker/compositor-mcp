@@ -415,9 +415,9 @@ test("a non-atomic partial failure keeps its structuredContent envelope", async 
     },
   });
 
-  // A failed batch is still a normal result: ok:false with per-op results and
-  // no rollback, not an isError payload — and it must satisfy the outputSchema.
-  assert.equal(result.isError, undefined);
+  // A batch reporting ok:false is an MCP tool-execution failure: isError is set
+  // while the per-op results stay legible and must satisfy the outputSchema.
+  assert.equal(result.isError, true);
   const structured = result.structuredContent!;
   assert.equal(structured["ok"], false);
   const results = structured["results"] as Array<{ ok: boolean; error?: { code: string } }>;

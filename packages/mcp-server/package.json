@@ -34,7 +34,7 @@
     "typescript": "^5.9.2"
   },
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "license": "MIT",
   "repository": {

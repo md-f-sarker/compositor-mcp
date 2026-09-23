@@ -20,6 +20,12 @@
 - Brought the bridge up to upstream HEAD (`75c4219`): exhaustive switches in `CompositorMCPFilters.swift` now cover the new `AdjustmentKind` cases (Black & White, Color Balance, Gaussian Blur, Motion Blur, Add Noise, Invert) and `FilterKind` cases (Black & White, Color Balance, Camera Raw Filter), with typed builders for each parameter set — the bridge previously failed to compile against HEAD, so the installer proceeded into a broken build.
 - Bridged the Camera Raw filter's flat sliders (white balance, exposure, tone, presence, dehaze, glow, vignette, grain, style enums) — enough for atmospheric passes like haze and glow; the nested panel groups (curve, mixer, grading, detail, optics, geometry, calibration) are not yet bridged.
 - Fixed the stock-app dead end: the installer now disables App Sandbox in the dev build's `project.pbxproj` — upstream's entitlements lack `com.apple.security.network.server`, so the bridge's loopback listener could not start and no `bridge.json` was ever written. The uninstaller restores the sandboxed settings. The audited upstream commit advanced to `75c4219`.
+- Made install/uninstall a true round trip: `install-bridge` records the original build-setting values it changes in `.compositor-mcp-install-state.json`, and `uninstall-bridge` restores exactly those values (skipping settings the user has since edited) instead of writing back hardcoded defaults.
+- Fixed `execute` returning a failed batch (`ok:false`) as a successful tool call — it now sets `isError` so MCP clients surface the failure correctly.
+- Fixed `search` reporting `total`/`truncated` after clamping to `limit` — `total` now counts all matches and `truncated` reflects the clamp.
+- Fixed non-atomic batches leaving a second failed operation's changes behind: the rollback accumulator's `||` short-circuit skipped `rollbackFailedOperation` once one rollback had succeeded.
+- Hardened the native bridge against local resource exhaustion: concurrent connections capped at 32, the serial work queue bounded at 64, a 30s receive deadline reclaims abandoned connections, and requests are now decoded and authenticated *before* being admitted to the queue.
+- Requires Node.js 22 or newer (Node 20 is EOL); CI uses `npm ci`; the release workflow fails if the tag doesn't match `package.json` version.
 
 ## 0.1.0 - 2026-09-19
 

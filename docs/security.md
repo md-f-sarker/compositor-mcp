@@ -10,6 +10,8 @@ The MCP client and Node server run as the signed-in macOS user. The Compositor a
 
 The listener rejects non-loopback endpoints. A fresh 32-byte token is generated with `SecRandomCopyBytes` on every app launch. The token is required on each request and compared without early exit. Requests are limited to 8 MiB and one request is accepted per connection.
 
+Resource exhaustion is bounded: at most 32 connections may be streaming requests at once, a connection that has not completed a request within 30 seconds is dropped, the serial work queue holds at most 64 requests, and depth/decode/token checks run *before* a request is admitted to the queue — unauthenticated payloads never occupy editing capacity.
+
 ### Discovery file
 
 The app writes `bridge.json` under `~/Library/Application Support/Compositor/MCP` with directory mode `0700` and file mode `0600`. The Node server verifies that the discovery path is a regular file, is owned by the current user and has no group/other permission bits. It also rejects non-loopback hosts from the discovery document.

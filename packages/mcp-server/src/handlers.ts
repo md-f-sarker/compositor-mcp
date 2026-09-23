@@ -1,5 +1,6 @@
 import {
   CAPABILITY_BY_NAME,
+  countCapabilityMatches,
   isJsonObject,
   searchCapabilities,
   validateJsonSchema,
@@ -18,17 +19,16 @@ export interface SearchInput extends SearchOptions {
 }
 
 export function handleSearch(input: SearchInput): JsonValue {
-  // searchCapabilities clamps limit to the catalogue-wide maximum (50), so the
-  // full match set is fetched once and sliced here — the response can then
-  // report the pre-slice total and whether the caller's limit hid matches.
+  // The catalogue can exceed the 50-hit fetch cap, so `total` comes from an
+  // unclamped count — otherwise it would silently under-report matches.
   const limit = Math.max(1, Math.min(50, input.limit ?? 10));
-  const matches = searchCapabilities(input.query, { ...input, limit: 50 });
-  const results = matches.slice(0, limit);
+  const results = searchCapabilities(input.query, { ...input, limit });
+  const total = countCapabilityMatches(input.query, input);
   return {
     query: input.query,
     count: results.length,
-    total: matches.length,
-    truncated: results.length < matches.length,
+    total,
+    truncated: results.length < total,
     results,
     hint: "Call execute with one or more implemented operation names. Use dryRun first for risky or complex batches.",
   } as unknown as JsonValue;

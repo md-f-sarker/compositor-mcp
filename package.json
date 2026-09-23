@@ -23,7 +23,7 @@
     "pack:smoke": "node scripts/pack-smoke.mjs"
   },
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "license": "MIT"
 }

@@ -10,6 +10,7 @@ import type { JsonValue } from "@compositor-mcp/protocol";
 import { runCli, USAGE, type CliIo } from "../src/cli.js";
 
 const repoInstaller = fileURLToPath(new URL("../../../scripts/install-into-compositor.sh", import.meta.url));
+const repoUninstaller = fileURLToPath(new URL("../../../scripts/uninstall-from-compositor.sh", import.meta.url));
 
 function captureIo(env: NodeJS.ProcessEnv = {}): { io: CliIo; stdout: () => string; stderr: () => string } {
   const stdout: string[] = [];
@@ -258,9 +259,52 @@ test("install-bridge copies sources, patches the delegate and is idempotent", as
     assert.match(project, /ENABLE_APP_SANDBOX = NO;/);
     assert.match(project, /CODE_SIGN_ENTITLEMENTS = "";/);
 
+    const state = JSON.parse(await fs.readFile(path.join(root, ".compositor-mcp-install-state.json"), "utf8"));
+    assert.deepEqual(state.originalBuildSettings.ENABLE_APP_SANDBOX, ["YES"]);
+    assert.deepEqual(state.originalBuildSettings.CODE_SIGN_ENTITLEMENTS, ["Config/Compositor.entitlements"]);
+
     const second = captureIo(env);
     assert.equal(await runCli(["install-bridge", root], second.io), 0);
     assert.match(second.stdout(), /Already patched/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("install-bridge/uninstall-bridge restores the recorded build settings", async () => {
+  const root = await makeCompositorTree();
+  try {
+    const env = { COMPOSITOR_MCP_INSTALLER: repoInstaller, COMPOSITOR_MCP_UNINSTALLER: repoUninstaller };
+    assert.equal(await runCli(["install-bridge", root], captureIo(env).io), 0);
+    assert.equal(await runCli(["uninstall-bridge", root], captureIo(env).io), 0);
+
+    const project = await fs.readFile(path.join(root, "Compositor.xcodeproj", "project.pbxproj"), "utf8");
+    assert.match(project, /ENABLE_APP_SANDBOX = YES;/);
+    assert.match(project, /CODE_SIGN_ENTITLEMENTS = Config\/Compositor\.entitlements;/);
+    assert.equal(await exists(path.join(root, ".compositor-mcp-install-state.json")), false);
+    assert.equal(await exists(path.join(root, "Compositor", "MCP")), false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uninstall preserves a checkout that was already unsandboxed", async () => {
+  const root = await makeCompositorTree();
+  try {
+    // Checkout whose project was already unsandboxed with cleared entitlements
+    // before the installer ran — uninstalling must NOT "restore" upstream values.
+    await fs.writeFile(
+      path.join(root, "Compositor.xcodeproj", "project.pbxproj"),
+      ['\t\tCODE_SIGN_ENTITLEMENTS = "";', "\t\tENABLE_APP_SANDBOX = NO;", ""].join("\n"),
+    );
+    const env = { COMPOSITOR_MCP_INSTALLER: repoInstaller, COMPOSITOR_MCP_UNINSTALLER: repoUninstaller };
+    assert.equal(await runCli(["install-bridge", root], captureIo(env).io), 0);
+    assert.equal(await runCli(["uninstall-bridge", root], captureIo(env).io), 0);
+
+    const project = await fs.readFile(path.join(root, "Compositor.xcodeproj", "project.pbxproj"), "utf8");
+    assert.match(project, /ENABLE_APP_SANDBOX = NO;/);
+    assert.match(project, /CODE_SIGN_ENTITLEMENTS = "";/);
+    assert.doesNotMatch(project, /YES/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

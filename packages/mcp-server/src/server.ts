@@ -196,7 +196,12 @@ export function createCompositorMcpServer(transport: BridgeTransport): McpServer
         const previewContent = request.operations.some((operation) => operation.name === "preview.render")
           ? await captureLatestPreview(result, previews)
           : [];
-        return asToolResult(result, previewContent);
+        const callResult = asToolResult(result, previewContent);
+        // MCP signals tool-execution failure via isError. A batch whose envelope
+        // reports ok:false (every op failed, or any op failed non-atomically)
+        // carries the flag while keeping its per-operation results legible.
+        if (isJsonObject(result) && result["ok"] === false) callResult.isError = true;
+        return callResult;
       } catch (error) {
         return errorToolResult(error);
       }
