@@ -7,7 +7,7 @@
 
 **Status: public beta** — the bridge is exercised against upstream Compositor `75c4219` on macOS 26; interfaces may still evolve.
 
-> **npm publication pending.** The source is available, but `compositor-mcp-server` has not yet been published to npm. Use the source-install instructions below; the npm quickstart and badge will be added after registry publication is verified.
+> **Installation:** use the npm quickstart for a version listed on [npm](https://www.npmjs.com/package/compositor-mcp-server), or build from source below. Both routes require the native Compositor bridge.
 
 Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **62 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
 
@@ -22,6 +22,50 @@ You describe the edit in natural language; the assistant plans and executes it a
 Or: *"Retouch a blemish in this portrait,"* *"resize this to 1600px wide and export PNG + JPEG,"* *"duplicate the layer, grade it warm, and save a variant"* — end-to-end tasks, not single clicks.
 
 The surface stays small: a `search` tool finds the right operation and returns only its schema, an `execute` tool runs operations singly or as an atomic all-or-nothing batch, MCP resources expose live editor state and rendered previews, and workflow prompts package complete recipes for common jobs.
+
+## Quickstart — npm package
+
+You need macOS 26, Xcode 26, Node.js 22 or newer, Git, and a dedicated Compositor source checkout. A stock Compositor app without the native bridge is not sufficient. The commands below pin the server to `0.1.0` so the server and installed bridge use the same release.
+
+### 1. Add the server to your MCP client
+
+```json
+{
+  "mcpServers": {
+    "compositor": {
+      "command": "npx",
+      "args": ["-y", "compositor-mcp-server@0.1.0"]
+    }
+  }
+}
+```
+
+For Claude Code:
+
+```bash
+claude mcp add compositor -- npx -y compositor-mcp-server@0.1.0
+```
+
+For Claude Desktop or another client, merge the JSON configuration above into its MCP configuration. If a desktop client cannot find `npx`, use the absolute executable path returned by `command -v npx`.
+
+### 2. Install and build the native bridge
+
+> **Development-build security notice:** installing the bridge disables App Sandbox and clears the configured entitlements in the affected Compositor build settings. Use a dedicated development checkout and copies of important images. Original settings are recorded for uninstall; the installer preserves the documented filesystem-root restrictions in the bridge itself.
+
+```bash
+npx -y compositor-mcp-server@0.1.0 install-bridge /absolute/path/to/Compositor
+npx -y compositor-mcp-server@0.1.0 configure "$HOME/Pictures" "$HOME/Downloads"
+```
+
+Open that checkout's `Compositor.xcodeproj`, build and run the **Compositor** scheme, then check the live connection:
+
+```bash
+npx -y compositor-mcp-server@0.1.0 doctor
+```
+
+The tested upstream Compositor commit is `75c421980ad2d289ea8244c54cfa3a649678d259`. Restart Compositor after changing configuration. The npm package bundles the bridge sources and installer, not a prebuilt Compositor application.
+
+If the requested version is not yet listed on npm, use the source installation below.
 
 ## Quickstart — install from source
 
@@ -183,7 +227,13 @@ Native validation records, including the real application build and bridge check
 
 ## Uninstall from Compositor
 
-From the `compositor-mcp` directory:
+For an npm installation:
+
+```bash
+npx -y compositor-mcp-server@0.1.0 uninstall-bridge /absolute/path/to/Compositor
+```
+
+For a source installation, from the `compositor-mcp` directory:
 
 ```bash
 node packages/mcp-server/dist/index.js uninstall-bridge /absolute/path/to/Compositor
