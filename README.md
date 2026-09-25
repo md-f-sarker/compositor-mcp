@@ -5,11 +5,11 @@
 
 **Model Context Protocol control of [Compositor](https://github.com/robbietilton/Compositor), the native macOS image editor.**
 
-**Status: public beta** — the bridge is exercised against upstream Compositor `75c4219` on macOS 26; interfaces may still evolve.
+**Status: public beta** — the bridge is exercised against upstream Compositor `7e9afbe` on macOS 26; interfaces may still evolve.
 
 > **Installation:** use the npm quickstart for a version listed on [npm](https://www.npmjs.com/package/compositor-mcp-server), or build from source below. Both routes require the native Compositor bridge.
 
-Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **62 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
+Compositor MCP gives AI assistants — Claude Code, Claude Desktop, Codex, or any MCP client — real, native editing power: all **64 catalogued operations implemented** and running through Compositor's own document model, renderer and undo history. No pixel clicking, no UI automation — the same code paths the app itself uses, exposed as typed, composable operations.
 
 ## What it does
 
@@ -63,7 +63,7 @@ Open that checkout's `Compositor.xcodeproj`, build and run the **Compositor** sc
 npx -y compositor-mcp-server@0.1.0 doctor
 ```
 
-The tested upstream Compositor commit is `75c421980ad2d289ea8244c54cfa3a649678d259`. Restart Compositor after changing configuration. The npm package bundles the bridge sources and installer, not a prebuilt Compositor application.
+The tested upstream Compositor commit is `7e9afbe8559d2b74100bc57a36db1302e91ceed8`. Restart Compositor after changing configuration. The npm package bundles the bridge sources and installer, not a prebuilt Compositor application.
 
 If the requested version is not yet listed on npm, use the source installation below.
 
@@ -104,7 +104,7 @@ Replace `/absolute/path/to/compositor-mcp` with the checkout directory from step
 
 ### 3. Install the native bridge and authorise filesystem roots
 
-Use a dedicated Compositor development checkout. The tested upstream commit is `75c421980ad2d289ea8244c54cfa3a649678d259`.
+Use a dedicated Compositor development checkout. The tested upstream commit is `7e9afbe8559d2b74100bc57a36db1302e91ceed8`.
 
 > **Development-build security notice:** `install-bridge` disables App Sandbox and clears the configured entitlements in the affected build settings — the bridge's loopback listener and authorised-root file access do not work with the stock sandboxed configuration. Original values are recorded in `.compositor-mcp-install-state.json`, and `uninstall-bridge` restores the recorded settings where they have not subsequently been edited. Work on copies of important images and use a dedicated development checkout.
 
@@ -129,20 +129,20 @@ node packages/mcp-server/dist/index.js doctor
 
 ## What you can control
 
-All 62 operations are implemented — see the full generated reference in [docs/capabilities.md](docs/capabilities.md).
+All 64 operations are implemented — see the full generated reference in [docs/capabilities.md](docs/capabilities.md).
 
 | Area | Operations |
 |---|---|
 | App & workspace | Ping, inspect editor state, list/select open projects |
 | Documents | Create, open, save, import images, PNG/JPEG export, flip, canvas size, image size, crop |
 | History | Undo, redo |
-| Layers | List/select, blank, duplicate, rename, delete, visibility, opacity, blend mode, move, group, ungroup, merge, flip, transform, free distort |
+| Layers | List/select, blank, duplicate, copy/paste, rename, delete, visibility, opacity, blend mode, move, group, ungroup, merge, flip, transform, free distort |
 | Masks | Add/delete, link/unlink, clipping masks, feather |
 | Selection | Inspect, all/none/invert, from layer/mask, rectangle, ellipse, polygonal lasso, magic wand, expand/contract |
 | Pixels | Fill, clear, invert, content-aware fill |
 | Painting & retouching | Brush/erase strokes, spot heal, clone stamp, blur/smudge/liquify, gradients, shape layers |
 | Adjustments | Add/update adjustment layers — Hue/Saturation, Levels, Curves, Exposure, Gradient Map, Grain |
-| Filters | Blur, noise, lens correction, remove background, and colour filters |
+| Filters | Blur, noise, vignette, bloom/glow, tonal contrast, lens correction, remove background, and colour filters |
 | Preview | Full-resolution temporary renders (inline PNG for vision-capable clients) |
 
 `execute` adds the controls a real editor needs: **atomic multi-operation batches** with native undo grouping, **dry runs**, **optimistic preconditions** (project/document/revision), **idempotency keys**, and **destructive-action confirmation**.
@@ -181,14 +181,14 @@ See [docs/security.md](docs/security.md) for the threat model and known limitati
 - A local checkout of [Compositor](https://github.com/robbietilton/Compositor)
 - An MCP client that speaks stdio JSON-RPC — tested with Claude Code, Claude Desktop and Codex; any client on MCP protocol revisions supported by the TypeScript SDK works.
 
-The Swift integration was audited against upstream Compositor commit `75c421980ad2d289ea8244c54cfa3a649678d259`. The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report. A cleanly applied patch on a newer upstream revision does not guarantee that the application will compile or behave identically.
+The Swift integration was audited against upstream Compositor commit `7e9afbe8559d2b74100bc57a36db1302e91ceed8` (the v1.3 line). The installer verifies the checkout's HEAD, warns clearly on drift, and records both SHAs in its install report. A cleanly applied patch on a newer upstream revision does not guarantee that the application will compile or behave identically. Upstream v1.3 also watches open `.comp` packages for external edits — bridge saves write through that watcher safely, and direct file edits to an open project reload on the canvas (see upstream `docs/writing-comp-files.md`).
 
 ## Known limits
 
 - A single inbound JSON-RPC message over **10 MiB** kills the server process — a hard cap in the stock TypeScript SDK's stdio buffer, not a Compositor limit. Keep tool calls carrying large inline payloads under it.
 - An in-progress interactive edit in the app (transform, crop, gradient, filter, lasso or selection move) blocks mutating operations with `pending_edit` — commit or cancel it in the app first.
 - Atomic batches roll back editor history only. Filesystem writes (exports, preview renders) and other non-transactional operations cannot roll back — send them in `atomic: false` batches.
-- The mock bridge is a behavioural harness (~40 of 62 operations), not a renderer: state, validation and batch semantics are real; pixels are not. Idempotent replay is keyed on the entire request — reuse a key with different arguments and it is an `idempotency_conflict`, not a replay.
+- The mock bridge is a behavioural harness (~40 of 64 operations), not a renderer: state, validation and batch semantics are real; pixels are not. Idempotent replay is keyed on the entire request — reuse a key with different arguments and it is an `idempotency_conflict`, not a replay.
 - Canvas and layer bounds follow Compositor's own caps: 30,000 px per side, 100 megapixels per canvas, 10,000 layers.
 
 ## Repository layout
@@ -217,7 +217,7 @@ COMPOSITOR_MCP_MOCK=1 npm run dev
 npm run check
 ```
 
-The mock is a behavioural harness, not a rendering emulator: it covers about 40 of the 62 operations (documents, layers, selections, painting, filters and previews) so the MCP surface, validation and batch semantics can be exercised without macOS.
+The mock is a behavioural harness, not a rendering emulator: it covers about 40 of the 64 operations (documents, layers, selections, painting, filters and previews) so the MCP surface, validation and batch semantics can be exercised without macOS.
 
 ## Validation status
 

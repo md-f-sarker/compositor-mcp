@@ -76,7 +76,7 @@ extension CompositorMCPCommandRouter {
             // can be enforced exactly here (a selection can only shrink it).
             if stops != nil, session.selection == nil, let document = session.document,
                document.width * document.height > EditorSession.maxShapePixels {
-                throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to 100 megapixels.")
+                throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to \(DocumentLimits.maxSurfaceMegapixels) megapixels.")
             }
         case "paint.shape":
             let kind = try arguments.optionalString("kind") ?? "Rectangle"
@@ -86,8 +86,8 @@ extension CompositorMCPCommandRouter {
             _ = try arguments.requiredDouble("x")
             _ = try arguments.requiredDouble("y")
             let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
-            guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
-                throw CompositorMCPCommandError.invalid("width and height must be between 1 and 30,000 pixels.")
+            guard (1...DocumentLimits.maxSideExtent).contains(width.rounded()), (1...DocumentLimits.maxSideExtent).contains(height.rounded()) else {
+                throw CompositorMCPCommandError.invalid("width and height must be between 1 and \(DocumentLimits.maxSide.formatted()) pixels.")
             }
             if let radius = try arguments.optionalDouble("cornerRadius"), !(0...15_000).contains(radius) {
                 throw CompositorMCPCommandError.invalid("cornerRadius must be between 0 and 15,000 pixels.")
@@ -96,7 +96,7 @@ extension CompositorMCPCommandRouter {
             _ = try arguments.optionalString("name")
             // The Shape tool's own budget, with its own message.
             guard Int(width.rounded()) * Int(height.rounded()) <= EditorSession.maxShapePixels else {
-                throw CompositorMCPCommandError.invalid("That shape is too large. A shape can cover up to 100 megapixels.")
+                throw CompositorMCPCommandError.invalid("That shape is too large. A shape can cover up to \(DocumentLimits.maxSurfaceMegapixels) megapixels.")
             }
             guard session.document != nil else {
                 throw CompositorMCPCommandError(code: "document_required", message: "No document is open.")
@@ -125,7 +125,9 @@ extension CompositorMCPCommandRouter {
             // Upstream only erases layer pixels; on a mask the stroke paints the mask tone,
             // which hides pixels where the mask tone is black — the mask form of erasing.
             settings.erasing = mode == "erase" && !session.isMaskSelected
-            let stroke = try makeStroke(for: layer, settings: settings, session: session)
+            // `growsMask: true` matches the brush tool's `makeRasterEdit` call upstream:
+            // a brush on a mask can paint anywhere on the canvas, growing the mask out.
+            let stroke = try makeStroke(for: layer, settings: settings, session: session, growsMask: true)
             for point in points { try append(point, to: stroke) }
             let undoName = stroke.isMask ? "Paint Mask" : (settings.erasing ? "Erase" : "Brush Stroke")
             return try await commitStroke(stroke, name: undoName, points: points.count, session: session)
@@ -270,7 +272,8 @@ extension CompositorMCPCommandRouter {
             gradient.opacity = CGFloat(opacity)
             session.gradientSettings = gradient
             defer { session.gradientSettings = previousGradient }
-            let stroke = try makeStroke(for: layer, settings: BrushSettings(), session: session)
+            // Gradients grow a mask target like the brush does upstream (`growsMask: true`).
+            let stroke = try makeStroke(for: layer, settings: BrushSettings(), session: session, growsMask: true)
             do {
                 try stroke.fillGradient(gradient.shape, from: start, to: end,
                                         colors: session.gradientColors(mask: stroke.isMask),
@@ -450,10 +453,12 @@ extension CompositorMCPCommandRouter {
         ShapeKind.matching(value)
     }
 
-    /// `makeRasterEdit` rethrows with the bridge's error shape.
-    func makeStroke(for layer: ImageLayer, settings: BrushSettings, session: EditorSession) throws -> BrushStroke {
+    /// `makeRasterEdit` rethrows with the bridge's error shape. `growsMask` mirrors the
+    /// upstream callers: brush strokes and gradients paint a mask beyond its bounds, the
+    /// other tools stay clipped to it.
+    func makeStroke(for layer: ImageLayer, settings: BrushSettings, session: EditorSession, growsMask: Bool = false) throws -> BrushStroke {
         do {
-            return try session.makeRasterEdit(for: layer, settings: settings)
+            return try session.makeRasterEdit(for: layer, settings: settings, growsMask: growsMask)
         } catch {
             throw CompositorMCPCommandError(code: "paint_failed", message: error.localizedDescription)
         }
@@ -536,7 +541,7 @@ extension CompositorMCPCommandRouter {
         settings.diameter = 2000   // the widest brush: the fewest coverage rows
         settings.hardness = 1      // a hard tip saturates coverage to full strength
         settings.opacity = CGFloat(max(0.01, opacity))
-        let stroke = try makeStroke(for: layer, settings: settings, session: session)
+        let stroke = try makeStroke(for: layer, settings: settings, session: session, growsMask: true)
         // Only the paintable region needs coverage — the canvas intersected with the
         // selection, the same region `fillGradient` paints.
         var region = CGRect(origin: .zero, size: document.size)
@@ -550,7 +555,7 @@ extension CompositorMCPCommandRouter {
         // Same budget the Shape tool applies before it renders: the region-sized CGImage
         // below would otherwise allocate unbounded memory on a very large canvas.
         guard Int(extent.width) * Int(extent.height) <= EditorSession.maxShapePixels else {
-            throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to 100 megapixels.")
+            throw CompositorMCPCommandError.invalid("That gradient is too large. A gradient can cover up to \(DocumentLimits.maxSurfaceMegapixels) megapixels.")
         }
         let image = try gradientImage(stops: stops, shape: shape, start: start, end: end,
                                       extent: extent, reversed: reversed)

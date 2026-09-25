@@ -170,7 +170,10 @@ extension CompositorMCPCommandRouter {
         if kind == .contentAwareFill, session.selection?.isEmpty != false {
             throw CompositorMCPCommandError(code: "selection_required", message: "Content-Aware Fill needs a non-empty selection.")
         }
-        guard session.canAdjustColors else {
+        // Vignette is the one filter upstream lets an empty layer take: `beginFilter`
+        // paints it with clear pixels first, so its gate is `canVignette` (which is
+        // `canAdjustColors` plus the empty-layer allowance), not `canAdjustColors`.
+        guard kind == .vignette ? session.canVignette : session.canAdjustColors else {
             throw CompositorMCPCommandError(code: "filter_unavailable", message: "The active layer cannot be filtered while another edit is active.")
         }
         return layer
@@ -525,6 +528,24 @@ extension CompositorMCPCommandRouter {
             // fixed while its panel is open, so the schema's seed is accepted but cannot be
             // honoured through the native pipeline.
             _ = try fields.optionalInt("seed")
+        case .vignette:
+            if let value = try fields.optionalDouble("amount") { settings.vignetteAmount = value }
+            if let color = try optionalJSONObject(fields, key: "color") {
+                settings.vignetteColor = try buildAdjustmentColor(color, argument: "color")
+            }
+            if let value = try fields.optionalDouble("midpoint") { settings.vignetteMidpoint = value }
+            if let value = try fields.optionalDouble("roundness") { settings.vignetteRoundness = value }
+            if let value = try fields.optionalDouble("feather") { settings.vignetteFeather = value }
+            if let value = try fields.optionalDouble("highlights") { settings.vignetteHighlights = value }
+        case .bloomGlow:
+            if let value = try fields.optionalDouble("amount") { settings.bloomAmount = value }
+            if let value = try fields.optionalDouble("radius") { settings.bloomRadius = value }
+        case .tonalContrast:
+            if let value = try fields.optionalDouble("amount") { settings.tonalAmount = value }
+            if let value = try fields.optionalDouble("radius") { settings.tonalRadius = value }
+            if let value = try fields.optionalDouble("shadows") { settings.tonalShadows = value }
+            if let value = try fields.optionalDouble("midtones") { settings.tonalMidtones = value }
+            if let value = try fields.optionalDouble("highlights") { settings.tonalHighlights = value }
         case .lensCorrection:
             if let value = try fields.optionalDouble("distortion") { settings.distortion = value }
         case .removeBackground:

@@ -20,6 +20,28 @@ struct ImageSizeSheet: View {
     var body: some View { EmptyView() }
 }
 
+final class EffectsPreviewCache {
+    func seed(_ id: UUID, image: CGImage, placement: LayerTransform) {}
+    func rendered(_ id: UUID) -> (image: CGImage, inset: CGFloat, placement: LayerTransform?)? { nil }
+}
+
+struct TrimSheet: View {
+    let finish: (TrimOptions?) -> Void
+    init(finish: @escaping (TrimOptions?) -> Void) { self.finish = finish }
+    var body: some View { EmptyView() }
+}
+
+struct PSDConversionRequest: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let title: String
+    let confirmTitle: String
+    var conversions: [PSDConversion]
+    var isReading: Bool
+    init(id: UUID = UUID(), title: String, confirmTitle: String, conversions: [PSDConversion], isReading: Bool = false) {
+        self.id = id; self.title = title; self.confirmTitle = confirmTitle; self.conversions = conversions; self.isReading = isReading
+    }
+}
+
 struct JPEGExportSheet: View {
     let raster: ExportRaster
     let finish: (Data?) -> Void

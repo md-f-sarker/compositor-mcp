@@ -23,7 +23,7 @@ final class CompositorMCPCommandRouter {
         "document.create", "document.open", "document.save", "document.importImages", "document.export", "document.flip",
         "document.resizeCanvas", "document.resizeImage", "document.crop",
         "history.undo", "history.redo",
-        "layer.list", "layer.select", "layer.addBlank", "layer.duplicate", "layer.rename", "layer.delete",
+        "layer.list", "layer.select", "layer.addBlank", "layer.duplicate", "layer.copy", "layer.paste", "layer.rename", "layer.delete",
         "layer.setVisibility", "layer.setOpacity", "layer.setBlendMode", "layer.move", "layer.group", "layer.ungroup", "layer.merge",
         "layer.flip", "layer.transform", "layer.distort", "layer.addMask", "layer.deleteMask", "layer.setMaskLinked",
         "layer.setClippingMask", "layer.featherMask",
@@ -343,8 +343,8 @@ final class CompositorMCPCommandRouter {
             _ = try resolveProject(arguments.requiredString("projectId"))
         case "document.create":
             let width = try arguments.requiredInt("width"), height = try arguments.requiredInt("height")
-            guard (1...30_000).contains(width), (1...30_000).contains(height) else {
-                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and 30,000 pixels.")
+            guard (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else {
+                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and \(DocumentLimits.maxSide.formatted()) pixels.")
             }
             if let resolution = try arguments.optionalDouble("resolution"), !(1...2400).contains(resolution) {
                 throw CompositorMCPCommandError.invalid("resolution must be between 1 and 2,400 DPI.")
@@ -379,8 +379,8 @@ final class CompositorMCPCommandRouter {
             guard session.canEditLayers else { throw CompositorMCPCommandError(code: "document_unavailable", message: "The canvas cannot be flipped while editing is unavailable.") }
         case "document.resizeCanvas":
             let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
-            guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
-                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and 30,000 pixels.")
+            guard (1...DocumentLimits.maxSideExtent).contains(width.rounded()), (1...DocumentLimits.maxSideExtent).contains(height.rounded()) else {
+                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and \(DocumentLimits.maxSide.formatted()) pixels.")
             }
             let anchor = try arguments.optionalString("anchor") ?? "centre"
             guard canvasAnchor(anchor) != nil else { throw CompositorMCPCommandError.invalid("Unknown anchor: \(anchor)") }
@@ -388,8 +388,8 @@ final class CompositorMCPCommandRouter {
             try requireSettledDocument(session)
         case "document.resizeImage":
             let width = try arguments.requiredDouble("width"), height = try arguments.requiredDouble("height")
-            guard (1...30_000).contains(width.rounded()), (1...30_000).contains(height.rounded()) else {
-                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and 30,000 pixels.")
+            guard (1...DocumentLimits.maxSideExtent).contains(width.rounded()), (1...DocumentLimits.maxSideExtent).contains(height.rounded()) else {
+                throw CompositorMCPCommandError.invalid("Document dimensions must be between 1 and \(DocumentLimits.maxSide.formatted()) pixels.")
             }
             if let resolution = try arguments.optionalDouble("resolution"), !(1...2400).contains(resolution) {
                 throw CompositorMCPCommandError.invalid("resolution must be between 1 and 2,400 DPI.")
@@ -477,6 +477,23 @@ final class CompositorMCPCommandRouter {
             let offset = try arguments.requiredInt("offset")
             guard (-1000...1000).contains(offset) else { throw CompositorMCPCommandError.invalid("offset must be between -1,000 and 1,000.") }
             try requireLayer(id, session: session)
+        case "layer.copy":
+            // Upstream Copy takes the selected layers whole only when no pixel selection is
+            // active (with one it copies pixels instead), so this op reports the conflict
+            // rather than silently changing what it copies.
+            guard session.selection == nil else {
+                throw CompositorMCPCommandError(code: "selection_active", message: "A pixel selection is active; selection.none clears it so layers can be copied whole.")
+            }
+            guard session.canCopyLayer else {
+                throw CompositorMCPCommandError(code: "copy_unavailable", message: "The selected layers cannot be copied while another edit is active.")
+            }
+        case "layer.paste":
+            guard session.document != nil, session.canEditLayers else {
+                throw CompositorMCPCommandError(code: "paste_unavailable", message: "Layers cannot be pasted while another edit is active.")
+            }
+            guard copiedLayerSource() != nil || session.canPaste else {
+                throw CompositorMCPCommandError(code: "copy_required", message: "Nothing has been copied to paste.")
+            }
         // MARK: Layer groups
         case "layer.group":
             _ = try arguments.optionalString("name")
@@ -651,6 +668,14 @@ final class CompositorMCPCommandRouter {
         }.map(\.id)
     }
 
+    /// The project tab whose whole-layer Copy is still fresh, mirroring `pasteCopiedLayer`'s
+    /// lookup: the change-count match is what keeps a stale copy from pasting after another
+    /// app (or project) has put something new on the pasteboard.
+    private func copiedLayerSource() -> ProjectTab? {
+        let count = NSPasteboard.general.changeCount
+        return workspace.tabs.first { $0.session.copiedLayer?.changeCount == count }
+    }
+
     private func validateAxis(_ axis: String) throws {
         guard axis == "horizontal" || axis == "vertical" else {
             throw CompositorMCPCommandError.invalid("axis must be horizontal or vertical.")
@@ -810,9 +835,17 @@ final class CompositorMCPCommandRouter {
             } else {
                 throw CompositorMCPCommandError.invalid("path is required for an untitled project.")
             }
+            // ProjectController.write's bookkeeping, minus its private saveGeneration:
+            // the watcher must not read our own write back as an outside edit.
+            let controller = workspace.current.controller
+            controller.externalChanges.saving = true
+            defer { controller.externalChanges.saving = false }
             try await ProjectStore.shared.save(snapshot, to: destination)
             session.projectURL = destination
             session.history.markSaved()
+            RecentProjects.shared.note(destination)
+            await controller.rememberProjectDigest(for: destination)
+            controller.watchProject(at: destination)
             return Outcome(value: .object(["path": .string(destination.path)]), mutated: true)
         case "document.importImages":
             let urls = try arguments.requiredStrings("paths").map { try paths.authorise($0, forWrite: false) }
@@ -1042,6 +1075,55 @@ final class CompositorMCPCommandRouter {
                 "requestedOffset": .int(offset),
                 "appliedOffset": .int(moved)
             ]), mutated: moved != 0)
+        case "layer.copy":
+            // Copied whole, as the app's Copy does with no selection: a pixel layer also
+            // leaves its pixels on the system pasteboard for other apps.
+            session.brushError = nil
+            session.copySelection()
+            if let message = session.brushError {
+                session.brushError = nil
+                throw CompositorMCPCommandError(code: "copy_failed", message: message)
+            }
+            guard let copied = session.copiedLayer else {
+                throw CompositorMCPCommandError(code: "copy_failed", message: "The layers could not be copied.")
+            }
+            return Outcome(value: .object([
+                "copiedLayerIds": .array(copied.ids.map { .string($0.uuidString) })
+            ]), mutated: true)
+        case "layer.paste":
+            guard session.document != nil, session.canEditLayers else {
+                throw CompositorMCPCommandError(code: "paste_unavailable", message: "Layers cannot be pasted while another edit is active.")
+            }
+            // Whole-layer Copy comes back complete, as the app's Paste does: a copy above
+            // each original in this project, or `copyLayers` across projects (awaited here
+            // so the new ids are known synchronously). Pixel copies fall through to the
+            // ordinary pixel Paste.
+            if let source = copiedLayerSource(), let copied = source.session.copiedLayer?.ids {
+                let ids = copied.filter { id in source.session.document?.layers.contains { $0.id == id } == true }
+                if !ids.isEmpty {
+                    if source.id == workspace.selectedID {
+                        session.duplicateLayers(ids, editName: "Paste")
+                    } else {
+                        guard source.session.canEditLayers else { throw CompositorMCPCommandError.busy() }
+                        await workspace.copyLayers(ids, into: workspace.selectedID)
+                    }
+                    return Outcome(value: .object([
+                        "pastedLayerIds": .array(session.selectedLayerIDs.map(\.uuidString).sorted().map(CompositorMCPJSON.string))
+                    ]), mutated: true)
+                }
+            }
+            guard session.canPaste else {
+                throw CompositorMCPCommandError(code: "copy_required", message: "Nothing has been copied to paste.")
+            }
+            let layersBefore = Set(session.document?.layers.map(\.id) ?? [])
+            session.paste()
+            let pastedIds = (session.document?.layers ?? []).map(\.id).filter { !layersBefore.contains($0) }
+            guard !pastedIds.isEmpty else {
+                throw CompositorMCPCommandError(code: "paste_failed", message: "The paste did not produce a layer.")
+            }
+            return Outcome(value: .object([
+                "pastedLayerIds": .array(pastedIds.map { .string($0.uuidString) })
+            ]), mutated: true)
         // MARK: Layer groups
         case "layer.group":
             guard session.selectedLayerIDs.count > 0 else { throw CompositorMCPCommandError(code: "layer_required", message: "Select at least one layer first.") }

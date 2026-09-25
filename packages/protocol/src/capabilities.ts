@@ -330,6 +330,38 @@ const FILTER_SETTINGS: ReadonlyArray<readonly [string, JsonSchema]> = [
     }),
   ],
   ["Content-Aware Fill", object()],
+  [
+    "Vignette",
+    {
+      ...object({
+        amount: number("Vignette strength, 0–100.", { minimum: 0, maximum: 100, default: 35 }),
+        color: { ...adjustmentColor, description: "Edge colour; black by default." },
+        midpoint: number("Vignette midpoint, 0–100.", { minimum: 0, maximum: 100, default: 50 }),
+        roundness: number("Vignette roundness, −100 to 100.", { minimum: -100, maximum: 100, default: 100 }),
+        feather: number("Vignette feather, 0–100.", { minimum: 0, maximum: 100, default: 60 }),
+        highlights: number("Highlight recovery while darkening, 0–100.", { minimum: 0, maximum: 100, default: 25 }),
+      }),
+      description:
+        "Vignette settings. Vignette is the one filter that also runs on an empty layer — it paints the layer's canvas frame.",
+    },
+  ],
+  [
+    "Bloom / Glow",
+    object({
+      amount: number("Bloom strength, 0–100.", { minimum: 0, maximum: 100, default: 40 }),
+      radius: number("Bloom radius in layer pixels, 1–150.", { minimum: 1, maximum: 150, default: 24 }),
+    }),
+  ],
+  [
+    "Tonal Contrast",
+    object({
+      amount: number("Overall strength, 0–100.", { minimum: 0, maximum: 100, default: 50 }),
+      radius: number("Local-detail radius in layer pixels, 1–100.", { minimum: 1, maximum: 100, default: 16 }),
+      shadows: number("Shadow strength, −100 to 100.", { minimum: -100, maximum: 100, default: 40 }),
+      midtones: number("Midtone strength, −100 to 100.", { minimum: -100, maximum: 100, default: 60 }),
+      highlights: number("Highlight strength, −100 to 100.", { minimum: -100, maximum: 100, default: 30 }),
+    }),
+  ],
   ["Curves", curvesParameters],
   ["Exposure", exposureParameters],
   ["Gradient Map", gradientMapParameters],
@@ -469,7 +501,7 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "document.importImages",
     title: "Import images",
-    description: "Import one or more JPEG, PNG, HEIC or TIFF files as layers.",
+    description: "Import one or more JPEG, PNG, HEIC, TIFF, PSD, PSB, SVG or RAW files as layers.",
     category: "document",
     risk: "filesystem",
     transactional: false,
@@ -624,9 +656,27 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "layer.duplicate",
     title: "Duplicate layer",
-    description: "Duplicate the active layer, preserving pixels, masks and appearance.",
+    description: "Duplicate the selected layers, preserving pixels, masks and appearance; several selected copies stack like Photoshop's.",
     category: "layer",
     inputSchema: object({ layerId }),
+  }),
+  capability({
+    name: "layer.copy",
+    title: "Copy layers",
+    description:
+      "Copy the selected layers whole — pixels, masks, effects and folder contents — for layer.paste in this project or another open one. Requires no active pixel selection.",
+    category: "layer",
+    aliases: ["copy layer", "copy selection"],
+    tags: ["clipboard", "copy"],
+  }),
+  capability({
+    name: "layer.paste",
+    title: "Paste layers or pixels",
+    description:
+      "Paste the last copied layers into the current project — copies above their originals in the same project, copied across from another — or paste copied pixels as a new layer.",
+    category: "layer",
+    aliases: ["paste layer", "paste clipboard", "paste image"],
+    tags: ["clipboard", "paste"],
   }),
   capability({
     name: "layer.rename",
@@ -1257,10 +1307,11 @@ export const CAPABILITIES: readonly Capability[] = [
   capability({
     name: "filter.apply",
     title: "Apply image filter",
-    description: "Apply Gaussian Blur, Motion Blur, Add Noise, Lens Correction, Remove Background, Camera Raw Filter or supported colour adjustment.",
+    description:
+      "Apply Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom / Glow, Tonal Contrast, Lens Correction, Remove Background, Camera Raw Filter or a supported colour adjustment.",
     category: "filter",
-    aliases: ["apply filter", "gaussian blur", "remove background"],
-    tags: ["filter", "blur", "noise", "background"],
+    aliases: ["apply filter", "gaussian blur", "remove background", "vignette", "bloom"],
+    tags: ["filter", "blur", "noise", "background", "vignette", "bloom", "contrast"],
     inputSchema: {
       type: "object",
       description: "A filter kind plus optional settings; each kind accepts only its own FilterSettings fields.",
@@ -1277,6 +1328,8 @@ export const CAPABILITIES: readonly Capability[] = [
     examples: [
       { arguments: { kind: "Gaussian Blur", settings: { radius: 4 } } },
       { arguments: { kind: "Remove Background", settings: { backgroundQuality: "Advanced", refineEdges: 20 } } },
+      { arguments: { kind: "Vignette", settings: { amount: 40, feather: 70 } } },
+      { arguments: { kind: "Tonal Contrast", settings: { amount: 60, shadows: 50 } } },
     ],
   }),
   capability({

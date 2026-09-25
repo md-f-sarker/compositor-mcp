@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Rebased the bridge on upstream Compositor v1.3.x (audited commit `7e9afbe`): `document.save` now performs upstream's external-change bookkeeping — `ExternalChangeState.saving`, digest memory and the project watcher — so a bridge-driven save is no longer mistaken for an outside edit that reloads the document and drops its undo history.
+- Surfaced v1.3's new filters in `filter.apply` — "Vignette" (amount, colour, midpoint, roundness, feather, highlights), "Bloom / Glow" (amount, radius) and "Tonal Contrast" (amount, radius, shadows, midtones, highlights) — with typed settings matching `FilterSettings`. Vignette additionally runs on an empty layer, painting its canvas frame via the `session.canVignette` gate.
+- Added `layer.copy` and `layer.paste`: whole-layer copies (pixels, masks, effects and folder contents) that paste back above their originals in the same project or copy across into another open project, with a pasteboard fallback for copied pixels. The catalogue is now 64/64 implemented.
+- `document.importImages` advertises the expanded upstream format list: JPEG, PNG, HEIC, TIFF, PSD, PSB, SVG and RAW files.
+- Aligned painting fidelity with upstream: brush strokes, gradients and fills onto a mask now grow the mask canvas (`makeRasterEdit(growsMask:)`), Bloom / Glow contributes `radius * 3 + 2` to the filter blur margin, and bounds/messages read `DocumentLimits` (30,000-px sides, 200-MP surfaces) instead of hard-coded constants.
+- The mock bridge learned the empty-layer vignette rule and the Bloom / Glow blur margin, and now derives its adjustment/filter kind lists from the catalogue so newly added kinds are never unrecognised.
+- Documented upstream v1.3's agent-facing additions: the project watcher reloads open `.comp` packages changed on disk, and upstream ships `AGENTS.md`/`docs/writing-comp-files.md` guides for editing `.comp` files directly.
+
 ## 0.1.0 - 2026-09-22
 
 - Implemented the remaining 20 catalogued capabilities natively — geometry and layer structure (`document.resizeCanvas`, `document.resizeImage`, `document.crop`, `layer.ungroup`, `layer.featherMask`, `layer.distort`), selection tools (`selection.rectangle`, `selection.ellipse`, `selection.polygon`, `selection.magicWand`), painting and retouching (`paint.brushStroke`, `paint.spotHeal`, `paint.clone`, `paint.blur`, `paint.gradient`, `paint.shape`), and adjustments/filters (`adjustment.add`, `adjustment.update`, `filter.apply`, `pixels.contentAwareFill`). The catalogue is now 62/62 implemented.

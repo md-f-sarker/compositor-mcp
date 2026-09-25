@@ -785,6 +785,8 @@ test("filter.apply Gaussian Blur grows the layer by the blur margin", async () =
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
   const layerId = await addPaintableLayer(bridge);
+  // Empty layers refuse non-vignette filters (canAdjustColors) — paint it first.
+  await execute(bridge, { operations: [{ name: "pixels.fill", arguments: {} }] });
   const result = await execute(bridge, {
     operations: [{ name: "filter.apply", arguments: { kind: "Gaussian Blur", settings: { radius: 4 } } }],
   });
@@ -827,6 +829,7 @@ test("filter.apply Remove Background produces a masked layer", async () => {
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
   const layerId = await addPaintableLayer(bridge);
+  await execute(bridge, { operations: [{ name: "pixels.fill", arguments: {} }] });
   const result = await execute(bridge, {
     operations: [{ name: "filter.apply", arguments: { kind: "Remove Background", settings: { backgroundQuality: "Advanced" } } }],
   });
@@ -844,6 +847,7 @@ test("pixels.contentAwareFill fills inside a selection and requires one", async 
   const bridge = new MockBridgeTransport();
   await createDocument(bridge);
   await addPaintableLayer(bridge);
+  await execute(bridge, { operations: [{ name: "pixels.fill", arguments: {} }] });
   const noSelection = await execute(bridge, { operations: [{ name: "pixels.contentAwareFill", arguments: {} }] });
   assert.equal(noSelection.ok, false);
   assert.equal(noSelection.results[0]?.error?.code, "selection_required");
