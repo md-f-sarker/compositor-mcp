@@ -1,7 +1,8 @@
 // Drives the live Compositor MCP bridge (real Swift router + EditorSession)
 // over the JSONL loopback protocol. Used by scripts/validate-native.sh after
 // the headless harness starts listening.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -114,16 +115,48 @@ if (adjId) {
 } else check("adjustment.update", false, "no adjustment layer id returned");
 
 r = await exec([op("layer.addBlank", {})]);
+const filledId = valueOf(r)?.id;
 check("layer.addBlank for filter", r.ok && r.result?.results?.[0]?.ok === true);
 r = await exec([op("pixels.fill", { target: "foreground" })]);
 r = await exec([op("filter.apply", { kind: "Gaussian Blur", settings: { radius: 4 } })]);
 check("filter.apply Gaussian Blur", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
 
-// CAF needs a selection on a pixel layer
+// v1.3 filters: Bloom / Glow and Tonal Contrast on the filled layer
+r = await exec([op("filter.apply", { kind: "Bloom / Glow", settings: { amount: 50, radius: 8 } })]);
+check("filter.apply Bloom / Glow", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
+r = await exec([op("filter.apply", { kind: "Tonal Contrast", settings: { amount: 50, shadows: 40 } })]);
+check("filter.apply Tonal Contrast", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
+
+// Vignette is the one filter that also runs on an empty layer (canVignette)
+r = await exec([op("layer.addBlank", { name: "Vignette target" })]);
+const vigId = valueOf(r)?.id;
+r = await exec([op("filter.apply", { kind: "Vignette", settings: { amount: 45 } })]);
+check("filter.apply Vignette on empty layer", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
+
+// ...and every other filter still refuses an empty layer (canAdjustColors)
+r = await exec([op("layer.addBlank", { name: "Empty target" })]);
+r = await exec([op("filter.apply", { kind: "Gaussian Blur", settings: { radius: 4 } })]);
+check("non-vignette filter refuses empty layer", r.ok === false || r.result?.results?.[0]?.ok === false, J(r.error ?? r.result?.results?.[0]?.error));
+
+// CAF needs a selection on a layer with enough opaque pixels — back to the filled one
+if (filledId) { r = await exec([op("layer.select", { layerIds: [filledId] })]); }
 r = await exec([op("selection.rectangle", { x: 10, y: 10, width: 30, height: 30 })]);
 r = await exec([op("pixels.contentAwareFill", {})]);
 check("pixels.contentAwareFill", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error));
 r = await exec([op("selection.none", {})]);
+
+// layer.copy/paste round-trip: copies the active (filled) layer whole, pastes it back above
+if (filledId) {
+  r = await exec([op("selection.rectangle", { x: 10, y: 10, width: 20, height: 20 })]);
+  r = await exec([op("layer.copy", {})]);
+  check("layer.copy refuses active pixel selection", r.ok === false || r.result?.results?.[0]?.ok === false, J(r.error ?? r.result?.results?.[0]?.error));
+  r = await exec([op("selection.none", {})]);
+  r = await exec([op("layer.copy", {})]);
+  check("layer.copy", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error ?? r.error));
+  r = await exec([op("layer.paste", {})]);
+  const pastedIds = valueOf(r)?.pastedLayerIds;
+  check("layer.paste returns new layer ids", r.ok && Array.isArray(pastedIds) && pastedIds.length > 0 && !pastedIds.includes(filledId), J(r.result?.results?.[0]?.error ?? r.error ?? valueOf(r)));
+} else check("copy/paste setup", false, "no filled layer id");
 
 // geometry ops — crop is destructive: confirm gate first, then the real crop
 r = await exec([op("document.crop", { x: 0, y: 0, width: 300, height: 200 })]);
@@ -170,6 +203,20 @@ if (distId) {
 // preview render -> real PNG path
 r = await exec([op("preview.render", {})]);
 check("preview.render", r.ok && r.result?.results?.[0]?.ok === true, J(valueOf(r)));
+
+// document.save writes a .comp package the file watcher must not flag as an
+// outside edit (externalChanges.saving / digest memory / watchProject). Saves are
+// path-gated: use the config's first allowedRoot when one exists, else tmpdir.
+const mcpDir = path.join(process.env.HOME, "Library/Application Support/Compositor/MCP");
+let saveRoot = os.tmpdir();
+try {
+  const roots = JSON.parse(readFileSync(path.join(mcpDir, "config.json"), "utf8")).allowedRoots ?? [];
+  if (roots.length) saveRoot = roots[0];
+} catch {}
+mkdirSync(path.join(saveRoot, "Compositor-MCP"), { recursive: true });
+const savePath = path.join(saveRoot, "Compositor-MCP", "drive-save.comp");
+r = await exec([op("document.save", { path: savePath })]);
+check("document.save writes .comp", r.ok && r.result?.results?.[0]?.ok === true, J(r.result?.results?.[0]?.error ?? r.error));
 
 // atomic batch rollback: good op then a bad layerId
 r = await exec([op("pixels.fill", { target: "foreground" }), op("layer.setOpacity", { layerId: "00000000-0000-0000-0000-000000000000", opacity: 0.5 })], { atomic: true });

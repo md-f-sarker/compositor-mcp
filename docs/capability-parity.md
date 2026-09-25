@@ -4,9 +4,9 @@ The goal is to expose every meaningful Compositor action through stable, typed M
 
 ## Current totals
 
-- Implemented: 62
+- Implemented: 64
 - Planned and schema-catalogued: 0
-- Total: 62
+- Total: 64
 
 The executable source of truth is [`packages/protocol/src/capabilities.ts`](../packages/protocol/src/capabilities.ts). Every catalogued operation is implemented; `search` returns the full catalogue by default.
 
@@ -17,13 +17,13 @@ The executable source of truth is [`packages/protocol/src/capabilities.ts`](../p
 | App/workspace | Ping, inspect state, list/select open projects |
 | Documents | Create, open, save, import images, PNG/JPEG export, flip canvas, canvas size, image size, crop |
 | History | Undo, redo |
-| Layers | List/select, blank, duplicate, rename, delete, visibility, opacity, blend mode, move, group, ungroup, merge, flip, transform, free distort |
+| Layers | List/select, blank, duplicate, copy/paste, rename, delete, visibility, opacity, blend mode, move, group, ungroup, merge, flip, transform, free distort |
 | Masks | Add/delete, link/unlink, clipping masks, feather |
 | Selection | Inspect, all/none/invert, from layer/mask, rectangle, ellipse, polygonal lasso, magic wand, expand/contract |
 | Pixels | Fill, clear, invert, content-aware fill |
 | Painting/retouching | Brush/erase, spot heal, clone stamp, blur/smudge/liquify, gradient, shape layers |
 | Adjustments | Add/update adjustment layers (Hue/Saturation, Levels, Curves, Exposure, Gradient Map, Grain) |
-| Filters | Apply supported filters and colour adjustments (blur, noise, lens correction, remove background, curves/exposure/gradient map/grain) |
+| Filters | Apply supported filters and colour adjustments (blur, noise, vignette, bloom/glow, tonal contrast, lens correction, remove background, curves/exposure/gradient map/grain) |
 | Preview | Full-resolution temporary PNG |
 
 ## Long-running operations

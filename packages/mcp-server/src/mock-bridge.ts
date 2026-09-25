@@ -1026,13 +1026,21 @@ export class MockBridgeTransport implements BridgeTransport {
           // commitBackgroundMask semantics: the subject is kept via a new mask.
           layer.mask = newMask(layer);
         } else {
-          // FilterEdit.blurMargin: the committed render can grow the layer — Gaussian by
-          // ceil(radius * 3 + 2), Motion Blur by ceil(distance / 2 + 2) document pixels.
+          // Vignette on an empty layer covers the whole canvas, as upstream's
+          // beginFilter does for `startedEmpty` (growingTo: canvas).
+          if (kind === "Vignette" && layer.fill === null) {
+            layer.transform = { ...layer.transform, x: 0, y: 0, width: document.width, height: document.height };
+          }
+          // FilterEdit.blurMargin: the committed render can grow the layer — Gaussian and
+          // Bloom / Glow by ceil(radius * 3 + 2), Motion Blur by ceil(distance / 2 + 2)
+          // document pixels.
           const margin = kind === "Gaussian Blur"
             ? Math.ceil((typeof settings?.["radius"] === "number" ? settings["radius"] : 1) * 3 + 2)
             : kind === "Motion Blur"
               ? Math.ceil((typeof settings?.["distance"] === "number" ? settings["distance"] : 10) / 2 + 2)
-              : 0;
+              : kind === "Bloom / Glow"
+                ? Math.ceil((typeof settings?.["radius"] === "number" ? settings["radius"] : 24) * 3 + 2)
+                : 0;
           layer.transform.x -= margin;
           layer.transform.y -= margin;
           layer.transform.width += margin * 2;
@@ -1190,6 +1198,11 @@ export class MockBridgeTransport implements BridgeTransport {
     }
     if (kind === "Content-Aware Fill" && !document.selection) {
       throw new CompositorMcpError("selection_required", "Content-Aware Fill needs a non-empty selection.");
+    }
+    // canAdjustColors/canVignette: layers with no pixels refuse every filter but
+    // Vignette, which paints them — and Vignette still refuses adjustment layers.
+    if (layer.fill === null && !layer.shape && (kind !== "Vignette" || layer.adjustment)) {
+      throw new CompositorMcpError("filter_unavailable", "The active layer cannot be filtered while another edit is active.");
     }
     return layer;
   }
@@ -1448,12 +1461,14 @@ const GRADIENT_SHAPES = ["Linear", "Radial"];
 const GRADIENT_STYLES = ["Foreground to Background", "Foreground to Transparent"];
 const SHAPE_KINDS = ["Rectangle", "Ellipse"];
 
-/// Upstream AdjustmentKind and FilterKind raw values, as the catalogue's oneOf branches list them.
-const ADJUSTMENT_KINDS = ["Hue/Saturation", "Levels", "Curves", "Exposure", "Gradient Map", "Grain"];
-const FILTER_KINDS = [
-  "Gaussian Blur", "Motion Blur", "Add Noise", "Lens Correction", "Remove Background",
-  "Content-Aware Fill", "Curves", "Exposure", "Gradient Map", "Grain",
-];
+/// Upstream AdjustmentKind and FilterKind raw values, read off the catalogue's
+/// oneOf branches so a newly added kind is never unrecognised here.
+const kindList = (name: string): string[] =>
+  (CAPABILITY_BY_NAME.get(name)?.inputSchema.oneOf ?? [])
+    .map((branch) => (branch.properties?.["kind"] as { const?: string } | undefined)?.const)
+    .filter((kind): kind is string => typeof kind === "string");
+const ADJUSTMENT_KINDS = kindList("adjustment.add");
+const FILTER_KINDS = kindList("filter.apply");
 
 function selectionMode(object: JsonObject): string {
   const mode = optionalString(object, "mode") ?? "replace";

@@ -1,6 +1,14 @@
 # Release validation
 
-Validation completed for the deep-parity branch on 20 September 2026.
+Validation completed for the deep-parity branch on 20 September 2026, and repeated for the v1.3.1 rebase on 25 September 2026.
+
+## Live native validation — 25 September 2026, at upstream `7e9afbe` (v1.3 line)
+
+Performed with `scripts/validate-native.sh` against upstream `robbietilton/Compositor` at audited commit `7e9afbe8559d2b74100bc57a36db1302e91ceed8` (three commits past the `v1.3.1` tag), on macOS 26 (Command Line Tools).
+
+- The full app module type-checks under the project's own settings, now including `SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor` (mirrored via `-default-isolation MainActor`) and the bridging header so the C pixel helpers resolve. **Zero errors across the module**, including the MCP bridge files.
+- The harness file list now excludes v1.3's UI-layer view files moved under `Rendering/` (`EditorCanvas`, `BrushCursorOverlay`, `InlineTextEditor`, `SampleRingOverlay`, `TransformOverlay`, `TiledLayerRenderer`, `LayerEffectsSurface`, `EffectsPreviewCache`), and `HarnessStubs.swift` stubs the UI types the document engine still references (`PSDConversionRequest`, `TrimSheet`, `EffectsPreviewCache`) plus the Sparkle `checkForUpdates(_:)` method upstream's new "Check for Updates…" menu item calls.
+- **45/45 end-to-end checks passed over the live JSONL protocol** (capability listing reports 64 implemented), including the v1.3 additions the driver now covers permanently: Vignette applied to an empty layer fills the canvas frame via `canVignette`, non-vignette filters still refuse empty layers with `filter_unavailable`, Bloom / Glow and Tonal Contrast apply, `layer.copy`/`layer.paste` round-trip within a project with returned layer ids, copying with an active pixel selection is refused, `document.save` performs the watcher bookkeeping (`externalChanges.saving`, digest memory, `watchProject`) so the file watcher does not mistake a bridge save for an outside edit, and undo/redo work afterwards.
 
 ## Completed in the development environment
 
@@ -8,7 +16,7 @@ Validation completed for the deep-parity branch on 20 September 2026.
 - Both TypeScript projects build to ESM output.
 - All protocol/server tests pass (77 mcp-server + 10 protocol).
 - Every catalogue example validates against its advertised JSON schema.
-- The TypeScript capability catalogue and Swift router agree on all **62 implemented** operation names, destructive classifications, read-only classifications and non-transactional classifications.
+- The TypeScript capability catalogue and Swift router agree on all **64 implemented** operation names, destructive classifications, read-only classifications and non-transactional classifications.
 - Installer smoke test passes, including repeat installation and clean uninstall.
 - `npm pack` produces a working standalone tarball; `compositor-mcp-server --help`, `doctor`, `configure`, and `install-bridge` verified from the packed artifact.
 
@@ -19,7 +27,7 @@ Performed with `scripts/validate-native.sh` against upstream `robbietilton/Compo
 - The full app module type-checks under the project's own settings (`SWIFT_VERSION=5`, approachable concurrency). **Zero errors in the MCP bridge files.** The only diagnostics are pre-existing upstream strict-concurrency issues in `Compositor/UI/ColorPickerSheet.swift`, identical with and without the bridge installed.
 - A headless harness (`scripts/validation/harness-main.swift` + `HarnessStubs.swift`) compiles the real Document/IO/Rendering/MCP stack into a runnable binary that hosts the actual `CompositorMCPBridge`.
 - The harness launched the real bridge: discovery file written to `~/Library/Application Support/Compositor/MCP/bridge.json` with mode `0600`, loopback host, fresh bearer token.
-- **36 end-to-end checks passed over the live JSONL protocol**, covering: ping, capability listing (62 implemented), wrong-token rejection (`unauthorised`), document create, layer add/select, all four selection tools (rectangle/ellipse/polygon/magic wand) plus `selection.none`, `pixels.fill`, all six paint operations (brushStroke, spotHeal Content-Aware mode, clone, blur, gradient, shape), adjustment.add/update (Hue/Saturation, Exposure), `filter.apply` (Gaussian Blur), `pixels.contentAwareFill`, `document.crop`, `document.resizeCanvas`, `document.resizeImage`, `layer.group`/`layer.ungroup`, `layer.distort`, `layer.featherMask`, `preview.render`, atomic batch rollback, destructive confirmation enforcement, and undo/redo.
+- **36 end-to-end checks passed over the live JSONL protocol**, covering: ping, capability listing (62 implemented at the time), wrong-token rejection (`unauthorised`), document create, layer add/select, all four selection tools (rectangle/ellipse/polygon/magic wand) plus `selection.none`, `pixels.fill`, all six paint operations (brushStroke, spotHeal Content-Aware mode, clone, blur, gradient, shape), adjustment.add/update (Hue/Saturation, Exposure), `filter.apply` (Gaussian Blur), `pixels.contentAwareFill`, `document.crop`, `document.resizeCanvas`, `document.resizeImage`, `layer.group`/`layer.ungroup`, `layer.distort`, `layer.featherMask`, `preview.render`, atomic batch rollback, destructive confirmation enforcement, and undo/redo.
 - **Real bug found and fixed during validation:** the revision fingerprint builder in `CompositorMCPCommandRouter.swift` used `String(<CGFloat>)`, which has no matching initializer — masked by a type-checker timeout in the alpha code. Split into per-field `String(describing:)` appends.
 
 ### Not covered by the harness

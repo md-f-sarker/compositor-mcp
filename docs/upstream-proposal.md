@@ -5,7 +5,7 @@
 > Recommended timing: file after live macOS validation lands (see
 > `docs/release-validation.md`) so the proposal carries "verified working on
 > commit `<sha>`" evidence. The integration below was developed and audited
-> against upstream commit `a19db9011282399785dc18efcfded904627bdcc2`.
+> against upstream commit `7e9afbe8559d2b74100bc57a36db1302e91ceed8`.
 >
 > When filing, paste everything below the rule into the GitHub issue body.
 
@@ -108,4 +108,4 @@ generic service protocol is the smallest commitment.
 For reference, the working integration (installer, patch, Swift sources and
 the MCP server) is at <https://github.com/md-f-sarker/compositor-mcp> —
 verified against upstream commit
-`a19db9011282399785dc18efcfded904627bdcc2`.
+`7e9afbe8559d2b74100bc57a36db1302e91ceed8`.

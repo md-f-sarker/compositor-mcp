@@ -3,7 +3,7 @@
 _Generated from `packages/protocol/src/capabilities.ts` by `scripts/generate-capability-docs.mjs`._
 _Do not edit by hand — run `npm run docs:capabilities` and commit the result._
 
-62 operations: 62 implemented, 0 planned.
+64 operations: 64 implemented, 0 planned.
 `execute` rejects `planned` operations with `operation_not_implemented` until the bridge implements them.
 
 **Risk** — `read`: no mutation; `write`: mutates the document; `destructive`: requires
@@ -54,6 +54,8 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 | `layer.select` | Select layers | implemented | write | yes | `layerIds`, `target`? | – |
 | `layer.addBlank` | Add blank layer | implemented | write | yes | `name`? | – |
 | `layer.duplicate` | Duplicate layer | implemented | write | yes | `layerId`? | – |
+| `layer.copy` | Copy layers | implemented | write | yes | – | aliases: copy layer, copy selection; tags: clipboard, copy |
+| `layer.paste` | Paste layers or pixels | implemented | write | yes | – | aliases: paste layer, paste clipboard, paste image; tags: clipboard, paste |
 | `layer.rename` | Rename layer | implemented | write | yes | `layerId`, `name` | – |
 | `layer.delete` | Delete layer | implemented | destructive | yes | `layerId` | aliases: remove layer |
 | `layer.setVisibility` | Set layer visibility | implemented | write | yes | `layerId`, `visible` | – |
@@ -125,7 +127,7 @@ Parameters in `code` are required; a trailing `?` marks optional arguments.
 
 | Operation | Title | Status | Risk | Txn | Parameters | Aliases & tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| `filter.apply` | Apply image filter | implemented | write | yes | `kind`, `settings`? | aliases: apply filter, gaussian blur, remove background; tags: filter, blur, noise, background |
+| `filter.apply` | Apply image filter | implemented | write | yes | `kind`, `settings`? | aliases: apply filter, gaussian blur, remove background, vignette, bloom; tags: filter, blur, noise, background, vignette, bloom, contrast |
 
 ## preview
 
